@@ -1,0 +1,8 @@
+#cloud-config
+# Vendor data: applied by cloud-init after the user data.
+package_update: true
+packages:
+  - qemu-guest-agent
+runcmd:
+  # "enable --now" is idempotent, so a re-run of the vendor data is harmless.
+  - [systemctl, enable, --now, qemu-guest-agent]

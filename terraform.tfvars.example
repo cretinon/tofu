@@ -1,0 +1,123 @@
+# ---------------------------------------------------------------------------
+# Example variable values.
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# terraform.tfvars is git-ignored: it is the place for the API token, the
+# password and the container root password. Every variable listed here is
+# documented in variables.tf and in README.md.
+# ---------------------------------------------------------------------------
+
+# --- Proxmox VE connection --------------------------------------------------
+
+pve_endpoint = "https://pve.example.com:8006/"
+pve_node     = "pve"
+
+# API token (recommended). Prefer exporting it rather than writing it here:
+#   export TF_VAR_pve_api_token='terraform@pve!provider=00000000-0000-0000-0000-000000000000'
+# pve_api_token = "terraform@pve!provider=00000000-0000-0000-0000-000000000000"
+
+# API user. Still required with an API token: the provider needs a PAM user for
+# the node SSH connection unless pve_ssh_username is set.
+pve_username = "root@pam"
+
+# Password authentication as a development fallback (ignored when a token is set).
+# pve_password = "change-me"
+
+# SSH access to the node (snippet upload + disk image import). The user needs
+# password-less sudo for pvesm/qm/tee. Set it explicitly: without it the
+# provider reuses pve_username, which fails with an API token (a token is not a
+# PAM user). Give the PAM name without its realm.
+pve_ssh_username = "root"
+# pve_ssh_private_key = file("~/.ssh/id_ed25519")
+# pve_ssh_agent       = true
+
+# pve_insecure      = false   # true only for a self-signed API certificate
+# pve_random_vm_ids = true
+# pve_min_tls       = "1.3"   # lower it (e.g. "1.2") only for an old Proxmox node
+
+# --- Datastores -------------------------------------------------------------
+
+# images_datastore_id   = "local"
+# snippets_datastore_id = "local"   # must have "snippets" content enabled
+
+# Snippet names are datastore-wide: give every configuration its own prefix
+# when several of them (or a hand-uploaded snippet) share the datastore.
+# snippet_name_prefix = "tofu"
+
+# --- Networking and access --------------------------------------------------
+
+dns_domain  = "lab.example.com"
+dns_servers = ["10.0.10.1", "10.0.10.2"]
+gateway     = "10.0.10.1"
+
+ssh_public_keys = [
+  "ssh-ed25519 AAAA...replace-me admin@example.com",
+]
+
+# Admin user created by cloud-init in the VMs. Keep the default unless you also
+# change the cloud image, which is where that user is defined.
+# vm_admin_user = "debian"
+
+# --- Managed OS images ------------------------------------------------------
+
+# The defaults provision from Debian 13 ("debian13" image / "debian13-ct"
+# template) and Debian 12 ("debian12" / "debian12-ct"). Overriding "images"
+# replaces the whole default map, so redefine every image you still reference.
+# file_name is mandatory in every entry (datastore name, extension included);
+# a checksum must be a hex digest whose length matches checksum_algorithm.
+# images = {
+#   debian13 = {
+#     content_type = "iso"
+#     url          = "https://cloud.debian.org/images/cloud/trixie/20260831-2587/debian-13-genericcloud-amd64-20260831-2587.qcow2"
+#     file_name    = "debian-13-genericcloud-amd64-20260831-2587.img"
+#     checksum     = "8ea9faae810043a0b35b0149f05014f26705c2339ffb11ead308f33e844a87cc3ef46ec81d5262b38817b6a88af404874d48a5857ebe072ef6a31dfb6e371f50"
+#   }
+# }
+
+# --- Virtual machines -------------------------------------------------------
+
+vm = {
+  "web-01" = {
+    vm_name                       = "web-01"
+    vm_ip                         = "10.0.10.11/24"
+    vm_datastore_storage_location = "local-lvm"
+    vm_cores                      = 2
+    vm_memory                     = 2048
+    vm_disk_size                  = 20
+    vm_tags                       = ["debian", "web"]
+  }
+
+  # Every other attribute is optional; defaults come from variables.tf.
+  # "db-01" = {
+  #   vm_name                       = "db-01"
+  #   vm_ip                         = "dhcp"
+  #   vm_datastore_storage_location = "local-lvm"
+  #   vm_source_image               = "debian12"
+  #   vm_id                         = 131            # pin the VM id (>= 100)
+  #   vm_memory                     = 4096
+  #   vm_floating_memory            = 1024           # allow ballooning down to 1 GiB
+  #   vm_nic_rate_limit             = 100
+  #   vm_protection                 = true           # Proxmox then refuses to destroy it --
+  #                                                  # do NOT combine with the flag below
+  #   vm_recreate_on_cloud_init_change = true        # rebuild it when the cloud-init inputs change
+  # }
+}
+
+# --- Containers -------------------------------------------------------------
+
+ct = {
+  "dns-01" = {
+    ct_name                       = "dns-01"
+    ct_ip                         = "10.0.10.21/24"
+    ct_datastore_storage_location = "local-lvm"
+    ct_cores                      = 1
+    ct_memory                     = 512
+    ct_disk_size                  = 8
+    ct_tags                       = ["debian", "dns"]
+    ct_id                         = 121            # pin the container id (>= 100)
+    # ct_protection               = true           # Proxmox then refuses to destroy/update it
+    # ct_root_password            = "change-me"    # omit for SSH-key-only access;
+    #                                              # it lands in the local state in clear text
+  }
+}

@@ -1,0 +1,26 @@
+# OpenTofu working directory and local state (local state is used on purpose).
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Variable values may hold secrets (API token, passwords): keep them out of git.
+# terraform.tfvars.example does not match this pattern and stays tracked.
+*.tfvars
+*.tfvars.json
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# Saved plan files embed the variable values in clear text (API token,
+# passwords), exactly like the state file.
+*.tfplan
+plan.out
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored: the provider
+# selection must stay reproducible across runs.

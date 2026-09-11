@@ -1,0 +1,23 @@
+#cloud-config
+# Rendered by OpenTofu from cloud-init/user-config.yaml.tftpl -- see cloud-init.tf.
+# Do not edit the uploaded snippet: edit this template and re-apply.
+---
+# SSH key authentication only: no password login.
+ssh_pwauth: false
+
+# Let cloud-init write /etc/resolv.conf from the values below, so name
+# resolution does not depend on the auto-generated network config.
+manage_resolv_conf: true
+resolv_conf:
+  searchdomains: ${jsonencode([dns_domain])}
+  nameservers: ${jsonencode(dns_servers)}
+
+users:
+  - name: ${admin_user}
+    gecos: Debian cloud admin
+    groups: [adm, sudo]
+    shell: /bin/bash
+    # Password login is disabled, hence the password-less sudo.
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    lock_passwd: true
+    ssh_authorized_keys: ${jsonencode(ssh_public_keys)}
