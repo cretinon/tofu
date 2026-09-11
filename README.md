@@ -110,25 +110,184 @@ while other guests are untouched.
 
 ## Quick start
 
-```shell
-cp terraform.tfvars.example terraform.tfvars   # then edit endpoint, node, keys, guests...
+A new VM is one entry added to the `vm` map of `terraform.tfvars`, then
+`init` → `check` → `plan` → `apply --force`, and the result is read back with `output`. Every
+command in these steps goes through the `my_warp.sh` wrapper (see
+[Orchestrator wrapper](#orchestrator-wrapper-lib_tofush)); the only raw `tofu` calls are the
+operations no wrapper covers. The steps assume the [Prerequisites](#prerequisites) are met, that
+`MY_GIT_DIR` is your local Git base directory, and that they are run from `${MY_GIT_DIR}/tofu`.
 
-tofu init
-tofu validate
-tofu plan
-tofu apply
+### Step 1 — Create your variable file
+
+`terraform.tfvars` is git-ignored (it holds the API token and the passwords) and only the
+example is tracked:
+
+```shell
+cd ${MY_GIT_DIR}/tofu
+cp terraform.tfvars.example terraform.tfvars
+chmod 600 terraform.tfvars
 ```
 
-Secrets can stay out of `terraform.tfvars` entirely by exporting them:
+Fill in the Proxmox connection and the shared guest settings:
+
+```hcl
+pve_endpoint     = "https://pve.example.com:8006/"   # your node
+pve_node         = "pve"                             # your node name
+pve_username     = "root@pam"                        # or "terraform@pve!provider"
+pve_ssh_username = "root"                            # MANDATORY with an API token
+# pve_insecure   = false                             # true only for a self-signed certificate
+# pve_min_tls    = "1.3"                             # a TLS 1.2-only node needs "1.2"
+
+dns_domain  = "example.com"
+dns_servers = ["10.0.0.1"]
+gateway     = "10.0.0.254"
+
+ssh_public_keys = [
+  "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... you@workstation",
+]
+```
+
+The secrets can also stay out of the file entirely (the environment wins):
 
 ```shell
 export TF_VAR_pve_api_token='terraform@pve!provider=00000000-0000-0000-0000-000000000000'
 export TF_VAR_pve_password='...'   # only when using password authentication
 ```
 
+### Step 2 — Add the new VM
+
+One entry in the `vm` map per VM: the key is arbitrary and becomes the resource address
+(`proxmox_virtual_environment_vm.debian_vm["web-01"]`). The file you just copied already
+declares `web-01` (and `dns-01`, a container): rename those keys, or add your entry to the
+existing map — pasting a second `vm = { ... }` block is rejected, keys must be unique.
+
+```hcl
+vm = {
+  "web-01" = {
+    vm_name                       = "web-01"
+    vm_ip                         = "10.0.10.11/24"   # or "dhcp"
+    vm_datastore_storage_location = "local-lvm"
+    vm_cores                      = 2
+    vm_memory                     = 2048
+    vm_disk_size                  = 20                # >= the image virtual size; 8 GiB default
+    vm_tags                       = ["debian", "web"]
+  }
+}
+```
+
+Only `vm_name`, `vm_ip` and `vm_datastore_storage_location` are required; everything else
+defaults (`vm_source_image = "debian13"`, `vm_bridge = "vmbr0"`, `vm_id` auto-assigned,
+`vm_protection = false`, ... — see [Variables](#variables)). The admin user and the SSH keys are
+**global**, not per-VM: `vm_admin_user` (default `debian`) belongs at the top level of
+`terraform.tfvars`, because the cloud-init user data snippet is rendered once for every VM.
+
+### Step 3 — Initialise the working directory
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_init
+```
+
+`tofu_init` runs `tofu init -backend=false`; ask for a full init when the state backend is
+managed too:
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_init --backend true
+```
+
+### Step 4 — Verify before applying (read-only, no credentials needed)
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_fmt --dry-run
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_validate
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_check
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_vars_doc_check
+```
+
+`tofu_check` is `fmt -check` + `validate`; `tofu_fmt --dry-run` prints a diff and never writes.
+
+### Step 5 — Plan (read-only, shows exactly what will be created)
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_plan
+```
+
+With another variable file, or saving the plan to inspect it later (no wrapper command applies
+a saved plan file — re-run `tofu_apply` for that):
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_plan --var-file terraform.tfvars
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_plan --out web-01.tfplan
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_show --file web-01.tfplan
+```
+
+`plan` runs with `-input=false`: a missing variable **fails immediately** instead of prompting
+on stdin. It ends with a single `N to add, 0 to change, 0 to destroy` total covering every
+resource: on a fresh state the first plan also adds the images and both cloud-init snippets, so
+read the resource list rather than expecting the new VM alone.
+
+### Step 6 — Apply (mutating: `--force` is mandatory)
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_apply --force
+```
+
+With another variable file, then the preview that touches nothing (it prints the plan, writes
+no plan file and never runs `-auto-approve`):
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_apply --force --var-file terraform.tfvars
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_apply --dry-run
+```
+
+`--force` (or `TOFU_CONFIRM=true`) is the only way `tofu_apply` runs `-auto-approve`, and
+`--dry-run` always stays read-only.
+
+### Step 7 — Verify the result
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_output
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_output --name vm_ids
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_output --name vm_names
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_output --name vm_ipv4_addresses
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_state_list
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_show
+```
+
+### Step 8 — Later changes and teardown
+
+Editing the `vm` entry and re-applying is enough for most changes:
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_apply --force
+```
+
+Cloud-init user and vendor data apply **once at first boot**, so pushing new SSH keys, DNS
+servers or a new IP to an existing VM means rebuilding it: set
+`vm_recreate_on_cloud_init_change = true` on that entry and re-apply — the VM is **destroyed**
+and recreated, disks included:
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_apply --force
+```
+
+The same rebuild is available as a one-shot through the raw CLI — no wrapper command covers
+`-replace`: see [How a guest is built](#how-a-guest-is-built) for that command and the three
+consequences of the flag.
+
 Removing a guest from `var.vm`/`var.ct` and re-applying destroys it (VMs are **stopped**, not
-shut down, thanks to `stop_on_destroy`), which avoids a destroy hanging on a guest agent that
-is not running.
+shut down, thanks to `stop_on_destroy`), and `--force` destroys everything this configuration
+manages — guests, images and snippets (a guest this state does not own is left alone):
+
+```shell
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_destroy --force
+```
+
+### What to watch out for
+
+- `vm_ip` is a CIDR (`10.0.10.11/24`) or `dhcp`: a static address must be free and outside the
+  DHCP range the node serves.
+- Overriding `images` replaces the **whole** default map (`debian13`, `debian12`,
+  `debian13-ct`, `debian12-ct`), so re-declare every image still referenced.
 
 ---
 
@@ -249,8 +408,8 @@ URL would invalidate the pinned checksum on every release.
 2. Pick the new versioned file and its digest (`SHA512SUMS` next to the image, for Debian).
 3. Update the matching entry in `var.images` (URL **and** `checksum` **and** `file_name`) —
    either in `terraform.tfvars` or in the defaults in `variables.tf`.
-4. `tofu apply`: the new file is downloaded; guests referencing that key keep their existing
-   disk until they are recreated.
+4. `${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_apply --force`: the new file is downloaded;
+   guests referencing that key keep their existing disk until they are recreated.
 
 Notes:
 
@@ -347,7 +506,7 @@ Notes:
 | `snippet_file_ids` | Datastore volume ids of the two cloud-init snippets. |
 
 ```shell
-tofu output -json image_file_ids
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_output --name image_file_ids
 ```
 
 ---
@@ -357,12 +516,13 @@ tofu output -json image_file_ids
 No live Proxmox access is needed to check the configuration:
 
 ```shell
-tofu fmt -check -recursive   # formatting (exit code 0 expected)
-tofu init -backend=false
-tofu validate                # syntax, types, variable and precondition wiring
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_init    # tofu init -backend=false
+${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_check   # fmt -check -recursive -diff + validate
 ```
 
-`tofu plan`/`apply` require real credentials and will create resources on the node.
+`tofu_check` is expected to exit `0`: it reports formatting mismatches and any syntax, type,
+variable or precondition wiring error. `tofu_plan`/`tofu_apply` require real credentials and
+will create resources on the node.
 
 ---
 
@@ -426,7 +586,7 @@ wrapper never auto-approves on its own, and `--dry-run` always stays read-only.
 | `disk size ... too small` | `vm_disk_size` must be ≥ the cloud image virtual size (default `8` GiB). |
 | Guest unreachable after `apply` | Check the QEMU agent status, `tofu output vm_ipv4_addresses`, and that the guest started (`tofu plan` shows `started`). |
 | TLS handshake failure with an older API | The provider negotiates at least `pve_min_tls` (`1.3` by default), so a TLS 1.2-only node is refused. Upgrade the Proxmox TLS setup, or set `pve_min_tls = "1.2"` as a deliberate downgrade. |
-| New SSH keys / resolvers not applied to an existing VM | cloud-init user and vendor data run at the first boot only: rebuild the VM (`tofu apply -replace=...`) or set `vm_recreate_on_cloud_init_change = true` — note that a rebuild **destroys** the VM and its disks. |
+| New SSH keys / resolvers not applied to an existing VM | cloud-init user and vendor data run at the first boot only: rebuild the VM (see [How a guest is built](#how-a-guest-is-built)) or set `vm_recreate_on_cloud_init_change = true` — note that a rebuild **destroys** the VM and its disks. |
 | Destroy (or update) refused by Proxmox | The guest has `vm_protection`/`ct_protection = true`: set it back to `false`, apply, then destroy. |
 | `you must specify a valid endpoint` / plain `http://` rejected | `pve_endpoint` must be an HTTPS URL such as `https://pve.example.com:8006/`. |
 
