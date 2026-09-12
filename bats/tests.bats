@@ -177,6 +177,100 @@ __require_tofu() {
     TOFU_BIN="$(command -v tofu)"
 }
 
+# skips the test when GnuPG is unavailable
+__require_gpg() {
+    if ! command -v gpg >/dev/null 2>&1; then
+        skip "the gpg binary is not installed"
+    fi
+    export TOFU_GPG_BIN
+    TOFU_GPG_BIN="$(command -v gpg)"
+}
+
+# creates a throwaway project with a throwaway keyring (never the user's), encrypts its
+# terraform.tfvars with the lib and removes the plaintext; sets GPG_PROJECT and TOFU_DIR
+__gpg_project() {
+    local __proj="$TEST_DIR/gpgproj"
+
+    mkdir -p "$__proj"
+    printf 'variable "x" { type = string }\n' >"$__proj/variables.tf"
+    printf 'x = "secret-value"\n' >"$__proj/terraform.tfvars"
+
+    export GNUPGHOME="$TEST_DIR/gnupg"
+    mkdir -p "$GNUPGHOME"
+    chmod 700 "$GNUPGHOME"
+    gpg --batch --quiet --passphrase '' --quick-generate-key 'tofu test <test@example.invalid>' default default 0
+
+    export TMPDIR="$TEST_DIR/tmp"
+    mkdir -p "$TMPDIR"
+    export TOFU_DIR="$__proj"
+    export TOFU_VAR_FILE=""
+    export TOFU_VARS_GPG_FILE=""
+    GPG_PROJECT="$__proj"
+
+    # The fixture is built directly with gpg (throwaway key, no passphrase) so the tests stay
+    # non-interactive: the lib asks the passphrase on the terminal when *it* encrypts.
+    gpg --batch --quiet --yes --trust-model always --default-recipient-self \
+        --output "$__proj/terraform.tfvars.gpg" --encrypt "$__proj/terraform.tfvars"
+    rm -f "$__proj/terraform.tfvars"
+
+    # the harness must never operate on the real project
+    if [ "$TOFU_DIR" == "$TOFU_PROJECT" ]; then
+        echo "harness error: TOFU_DIR was not switched to the sandbox" >&2
+        return 1
+    fi
+}
+
+# creates a plain (unencrypted) sandbox project and points TOFU_DIR at it; sets PLAIN_PROJECT
+__plain_project() {
+    local __proj="$TEST_DIR/plainproj"
+
+    mkdir -p "$__proj"
+    printf 'variable "x" { type = string }\n' >"$__proj/variables.tf"
+    printf 'x = "secret-value"\n' >"$__proj/terraform.tfvars"
+    export TOFU_DIR="$__proj"
+    export TOFU_VAR_FILE=""
+    export TOFU_VARS_GPG_FILE=""
+    PLAIN_PROJECT="$__proj"
+}
+
+# installs a fake `gpg` recording its argv and creating the file after `--output`
+__stub_gpg() {
+    cat >"$TEST_DIR/bin/gpg-stub" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$TOFU_GPG_STUB_LOG"
+out=""
+prev=""
+for __a in "$@"; do
+    if [ "$prev" == "--output" ]; then out="$__a" ; fi
+    prev="$__a"
+done
+if [ -n "$out" ]; then : >"$out" ; fi
+exit "${TOFU_GPG_STUB_EXIT:-0}"
+STUB
+    chmod +x "$TEST_DIR/bin/gpg-stub"
+    export TOFU_GPG_STUB_LOG="$TEST_DIR/gpg.log"
+    : >"$TOFU_GPG_STUB_LOG"
+    export TOFU_GPG_BIN="$TEST_DIR/bin/gpg-stub"
+}
+
+# installs a `tofu` stub recording its argv and the content of every -var-file it receives
+__stub_tofu_varfile() {
+    cat >"$TEST_DIR/bin/tofu-varfile" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >>"$TOFU_STUB_LOG"
+for __a in "$@"; do
+    case "$__a" in
+        -var-file=* ) cat -- "${__a#-var-file=}" >>"$TOFU_CONTENT_LOG" ;;
+    esac
+done
+exit 0
+STUB
+    chmod +x "$TEST_DIR/bin/tofu-varfile"
+    export TOFU_CONTENT_LOG="$TEST_DIR/content.log"
+    : >"$TOFU_CONTENT_LOG"
+    export TOFU_BIN="$TEST_DIR/bin/tofu-varfile"
+}
+
 # ------------------------------------------------------- A. runtime helpers --
 @test "_tofu_bin => returns the configured binary" {
     run _tofu_bin
@@ -277,6 +371,207 @@ __require_tofu() {
     run _tofu_var_file
     assert_success
     assert_output "$(realpath -- "$TEST_DIR/conf.tfvars")"
+}
+
+@test "_tofu_var_cleanup => removes the temporary file" {
+    printf 'x = "1"\n' >"$TEST_DIR/tmpfile"
+    run _tofu_var_cleanup "$TEST_DIR/tmpfile"
+    assert_success
+    [ ! -f "$TEST_DIR/tmpfile" ]
+}
+
+# ---------------------------------------------- B. encrypted variable file --
+@test "_tofu_gpg_bin => returns the configured binary" {
+    __require_gpg
+    run _tofu_gpg_bin
+    assert_success
+    assert_output "$TOFU_GPG_BIN"
+}
+
+@test "_tofu_gpg_bin => fails when the binary is missing" {
+    export TOFU_GPG_BIN="$TEST_DIR/nope/gpg"
+    run _tofu_gpg_bin
+    assert_failure
+    [ "$status" -eq "$ERROR_ARGV" ]
+    [[ "$output" == *"no usable"* ]]
+}
+
+@test "_tofu_vars_gpg_file => resolves terraform.tfvars.gpg inside the project" {
+    __require_gpg
+    __gpg_project
+    run _tofu_vars_gpg_file
+    assert_success
+    assert_output "$(realpath -- "$GPG_PROJECT/terraform.tfvars.gpg")"
+}
+
+@test "_tofu_vars_gpg_file => outputs nothing when no encrypted file exists" {
+    mkdir -p "$TEST_DIR/nogpg"
+    printf 'variable "x" {}\n' >"$TEST_DIR/nogpg/variables.tf"
+    export TOFU_DIR="$TEST_DIR/nogpg"
+    export TOFU_VARS_GPG_FILE=""
+    run _tofu_vars_gpg_file
+    assert_success
+    assert_output ""
+}
+
+@test "_tofu_vars_gpg_file => fails on a configured file that does not exist" {
+    mkdir -p "$TEST_DIR/nogpg2"
+    printf 'variable "x" {}\n' >"$TEST_DIR/nogpg2/variables.tf"
+    export TOFU_DIR="$TEST_DIR/nogpg2"
+    export TOFU_VARS_GPG_FILE="missing.tfvars.gpg"
+    run _tofu_vars_gpg_file
+    assert_failure
+    [ "$status" -eq "$ERROR_ARGV" ]
+    [[ "$output" == *"not found"* ]]
+}
+
+@test "_tofu_var_file => prefers the encrypted file and warns about the plaintext one" {
+    __require_gpg
+    __gpg_project
+    printf 'x = "plaintext"\n' >"$GPG_PROJECT/terraform.tfvars"
+    run _tofu_var_file
+    assert_success
+    [[ "$output" == *"$GPG_PROJECT/terraform.tfvars.gpg"* ]]
+    [[ "$output" == *"ignoring the plaintext"* ]]
+}
+
+@test "_tofu_var_decrypt => passes a plaintext file through" {
+    printf 'x = "1"\n' >"$TEST_DIR/plain.tfvars"
+    run _tofu_var_decrypt "$TEST_DIR/plain.tfvars" "$TEST_DIR/dest.tfvars"
+    assert_success
+    assert_output "$TEST_DIR/plain.tfvars"
+}
+
+@test "_tofu_var_decrypt => outputs nothing without a variable file" {
+    run _tofu_var_decrypt "" "$TEST_DIR/dest.tfvars"
+    assert_success
+    assert_output ""
+}
+
+@test "_tofu_var_decrypt => decrypts an encrypted file with mode 600" {
+    __require_gpg
+    __gpg_project
+    local __dest="$TEST_DIR/decrypted.tfvars"
+    run _tofu_var_decrypt "$GPG_PROJECT/terraform.tfvars.gpg" "$__dest"
+    assert_success
+    assert_output --partial "$__dest"
+    [ "$(stat -c '%a' "$__dest")" == "600" ]
+    run cat "$__dest"
+    assert_output 'x = "secret-value"'
+}
+
+@test "_tofu_var_decrypt => fails closed when the file cannot be decrypted" {
+    __require_gpg
+    printf 'not an openpgp message\n' >"$TEST_DIR/broken.tfvars.gpg"
+    run _tofu_var_decrypt "$TEST_DIR/broken.tfvars.gpg" "$TEST_DIR/out.tfvars"
+    assert_failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"could not decrypt"* ]]
+}
+
+@test "_tofu_gpg_decrypt => asks the passphrase on the terminal (no --batch, no capture)" {
+    __stub_gpg
+    printf 'x = "1"\n' >"$TEST_DIR/enc.gpg"
+    run _tofu_gpg_decrypt "$TEST_DIR/enc.gpg" "$TEST_DIR/dest.tfvars"
+    assert_success
+    run cat "$TOFU_GPG_STUB_LOG"
+    [[ "$output" == *"--decrypt $TEST_DIR/enc.gpg"* ]]
+    [[ "$output" == *"--pinentry-mode loopback"* ]]
+    [[ "$output" != *"--batch"* ]]
+}
+
+@test "_tofu_plan => hands the decrypted content to tofu and leaves no temporary file" {
+    __require_gpg
+    __gpg_project >/dev/null
+    __stub_tofu_varfile
+    run _tofu_plan
+    assert_success
+    run cat "$TOFU_CONTENT_LOG"
+    assert_output 'x = "secret-value"'
+    [[ "$(tail -1 "$TOFU_STUB_LOG")" == *"-var-file=$TMPDIR/tofu-varfile."* ]]
+    [ -z "$(ls -A "$TMPDIR")" ]
+    run bash -c "ls -A '$TOFU_DIR'"
+    [[ "$output" != *"tofu-varfile"* ]]
+}
+
+@test "_tofu_apply => decrypts the encrypted variable file" {
+    __require_gpg
+    __gpg_project >/dev/null
+    __stub_tofu_varfile
+    export FORCE=true
+    run _tofu_apply
+    assert_success
+    [[ "$(tail -1 "$TOFU_STUB_LOG")" == *"apply -input=false -auto-approve -var-file=$TMPDIR/tofu-varfile."* ]]
+    [ -z "$(ls -A "$TMPDIR")" ]
+}
+
+@test "_tofu_gpg_encrypt => encrypts symmetrically and asks the passphrase on the terminal" {
+    __stub_gpg
+    printf 'x = "1"\n' >"$TEST_DIR/plain.txt"
+    run _tofu_gpg_encrypt "$TEST_DIR/plain.txt" "$TEST_DIR/out.gpg"
+    assert_success
+    [ -f "$TEST_DIR/out.gpg" ]
+    [ "$(stat -c '%a' "$TEST_DIR/out.gpg")" == "600" ]
+    run cat "$TOFU_GPG_STUB_LOG"
+    [[ "$output" == *"--symmetric"* ]]
+    [[ "$output" == *"--cipher-algo AES256"* ]]
+    [[ "$output" == *"--pinentry-mode loopback"* ]]
+    [[ "$output" != *"--batch"* ]]
+    [[ "$output" != *"--recipient"* ]]
+}
+
+@test "_tofu_gpg_encrypt => fails when gpg fails" {
+    __stub_gpg
+    export TOFU_GPG_STUB_EXIT=2
+    printf 'x = "1"\n' >"$TEST_DIR/plain.txt"
+    run _tofu_gpg_encrypt "$TEST_DIR/plain.txt" "$TEST_DIR/out.gpg"
+    assert_failure
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"could not encrypt"* ]]
+}
+
+@test "_tofu_vars_encrypt => encrypts terraform.tfvars through the symmetric helper" {
+    __stub_gpg
+    __plain_project
+    run _tofu_vars_encrypt
+    assert_success
+    assert_output "$PLAIN_PROJECT/terraform.tfvars.gpg"
+    [ -f "$PLAIN_PROJECT/terraform.tfvars.gpg" ]
+    [ "$(stat -c '%a' "$PLAIN_PROJECT/terraform.tfvars.gpg")" == "600" ]
+    run cat "$TOFU_GPG_STUB_LOG"
+    [[ "$output" == *"--output $PLAIN_PROJECT/terraform.tfvars.gpg"* ]]
+}
+
+@test "_tofu_vars_encrypt => refuses to overwrite without --force" {
+    __stub_gpg
+    __plain_project
+    : >"$PLAIN_PROJECT/terraform.tfvars.gpg"
+    run _tofu_vars_encrypt
+    assert_failure
+    [ "$status" -eq "$ERROR_ARGV" ]
+    [[ "$output" == *"already exists"* ]]
+    export FORCE=true
+    run _tofu_vars_encrypt
+    assert_success
+}
+
+@test "_tofu_vars_encrypt => DRY_RUN never calls gpg" {
+    __stub_gpg
+    __plain_project
+    export DRY_RUN=true
+    run _tofu_vars_encrypt
+    assert_success
+    [ ! -f "$PLAIN_PROJECT/terraform.tfvars.gpg" ]
+    run cat "$TOFU_GPG_STUB_LOG"
+    assert_output ""
+}
+
+@test "CLI => my_warp.sh --lib tofu tofu_vars_encrypt encrypts the variable file" {
+    __stub_gpg
+    __plain_project
+    run "$MY_GIT_DIR/shell/my_warp.sh" --lib tofu tofu_vars_encrypt --force
+    assert_success
+    [[ "$output" == *"$PLAIN_PROJECT/terraform.tfvars.gpg"* ]]
 }
 
 @test "_tofu_run => forwards the chdir and the arguments" {
@@ -952,6 +1247,11 @@ ct = { dns = { ct_name = "dns", ct_ip = "10.0.10.21/24", ct_datastore_storage_lo
 @test "project => .terraform.lock.hcl is present and not ignored" {
     [ -f "$TOFU_PROJECT/.terraform.lock.hcl" ]
     run git -C "$TOFU_PROJECT" check-ignore -q .terraform.lock.hcl
+    assert_failure
+}
+
+@test "project => the encrypted variable file is not ignored" {
+    run git -C "$TOFU_PROJECT" check-ignore -q terraform.tfvars.gpg
     assert_failure
 }
 

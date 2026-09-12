@@ -106,6 +106,9 @@ while other guests are untouched.
 
 - `tofu` ≥ 1.6 and an SSH key for the node: either loaded in an `ssh-agent`, or on disk
   through `pve_ssh_private_key_file`, or given as PEM content via `pve_ssh_private_key`.
+- `gpg` (GnuPG) when the variable file is kept encrypted in git (`terraform.tfvars.gpg`); the
+  passphrase is asked in the terminal on every encrypt/decrypt (no keyring or pinentry setup
+  needed).
 
 ---
 
@@ -598,7 +601,7 @@ wrapper never auto-approves on its own, and `--dry-run` always stays read-only.
 ## State
 
 State is **local** (`terraform.tfstate` in this directory) and git-ignored, together with
-`*.tfvars` (which hold the API token and the passwords). Two consequences worth knowing:
+`*.tfvars` (which hold the API token and the passwords). Three consequences worth knowing:
 
 - Keep a backup of the state file: it is the only record linking the configuration to the
   guests (the lock file `.terraform.lock.hcl` *is* tracked — it pins the exact provider version
@@ -608,6 +611,35 @@ State is **local** (`terraform.tfstate` in this directory) and git-ignored, toge
   file must leave your machine.
 - Saved plan files (`tofu plan -out=...`, `*.tfplan`/`plan.out`) embed the variable values in
   clear text too: they are git-ignored and deserve the same care as the state file.
+
+### Encrypted variable file in git (`terraform.tfvars.gpg`)
+
+To keep the variable values **in git** without committing them in clear text, store them as a
+GnuPG file protected by a **passphrase** (symmetric, AES256): `terraform.tfvars.gpg` is tracked
+(the `*.tfvars` ignore rule does not match it), and `tofu_plan`, `tofu_apply` and
+`tofu_destroy` decrypt it **on the fly** into a temporary file (mode `600`, outside the project,
+removed when the command ends). No decrypted file is left behind, and the plaintext never has to
+exist on disk.
+
+- **A passphrase is asked in the terminal, every time** — for reading as well as for writing.
+  The prompt comes from GnuPG itself (`--pinentry-mode loopback`), so nothing here depends on
+  this machine's keyring, `gpg-agent`, pinentry program or `DISPLAY`, and no passphrase is
+  cached. This is the same model as an Emacs `.authinfo.gpg`.
+- **Edit it with any EasyPG-capable editor**: Emacs opens and saves `*.gpg` transparently
+  (`epa-file`) and asks for the passphrase, so `terraform.tfvars.gpg` behaves like any other
+  buffer — that is the intended workflow.
+- **Resolution order**: `--var-file` → `TOFU_VAR_FILE` → `terraform.tfvars.gpg` (see
+  `TOFU_VARS_GPG_FILE`) → `terraform.tfvars`. When both the encrypted and the plaintext file
+  exist, the encrypted one wins and a warning names the ignored plaintext.
+- **Fail closed**: a wrong or refused passphrase, or a corrupt file, makes the command fail; it
+  never continues silently without the variables.
+- `tofu_vars_encrypt` exists for the tests and for a one-shot bootstrap
+  (`tofu_vars_encrypt --var-file terraform.tfvars --out terraform.tfvars.gpg`); it asks the
+  passphrase (twice: enter + confirm) and refuses to overwrite without `--force`. Day-to-day
+  editing is done in the editor, not through it.
+- The caveats above still apply — the state and any saved plan file contain the values in clear
+  text — and **the passphrase is the only secret protecting the committed file: losing it means
+  losing the values**.
 
 ---
 

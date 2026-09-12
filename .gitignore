@@ -13,6 +13,9 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 
+# NOTE: an encrypted variable file (terraform.tfvars.gpg) is deliberately NOT ignored either:
+# it is meant to be committed, and the wrapper decrypts it on the fly when planning/applying.
+
 # CLI configuration files
 .terraformrc
 terraform.rc

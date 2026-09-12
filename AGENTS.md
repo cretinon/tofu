@@ -47,11 +47,15 @@ guards) are used locally and from CI.
 * **Feature Library (`lib_tofu.sh`)** — orchestrator commands grouped as
   (per-function reference: `functions.md`, auto-generated — never hand-maintained):
   - Runtime — resolve the binary/directory/variable file and run `tofu` (`_tofu_bin`,
-    `_tofu_dir`, `_tofu_var_file`, `_tofu_run`), plus the `--force` guard (`_tofu_confirm`).
+    `_tofu_dir`, `_tofu_var_file`, `_tofu_run`), decrypt the encrypted variable file on the fly
+    (`_tofu_vars_gpg_file`, `_tofu_gpg_decrypt`, `_tofu_gpg_encrypt`, `_tofu_var_decrypt`,
+    `_tofu_var_cleanup`; the passphrase is asked on the terminal via GnuPG loopback pinentry),
+    plus the `--force` guard (`_tofu_confirm`).
   - Toolchain commands — `version`, `init`, `fmt`, `validate`.
   - Lifecycle commands — `plan`, `apply`, `destroy`, `output`, `state_list`, `show`
     (`apply`/`destroy` refuse to run without `--force`).
-  - Project checks — `check` (fmt + validate) and `vars_doc_check` (variables documented).
+  - Project checks — `check` (fmt + validate), `vars_doc_check` (variables documented) and
+    `vars_encrypt` (bootstrap/tests only: encrypt a variable file into `terraform.tfvars.gpg`).
   - Orchestrator dispatcher — `_process_lib_tofu`, `_usage_tofu`.
 * **Tests (`bats/tests.bats`)**: wrapper behaviour with a mocked `tofu` stub plus the project
   invariants (variable validations, rebuild trigger, documentation sync) driven with the real
@@ -93,6 +97,8 @@ exports these variables when not already set (environment wins):
 | `TOFU_BIN` | `tofu` | OpenTofu binary found in `PATH`, or an absolute path. |
 | `TOFU_DIR` | `$MY_GIT_DIR/tofu` | Directory holding the `.tf` files. |
 | `TOFU_VAR_FILE` | *(empty)* | Variable file used when `--var-file` is not given (`terraform.tfvars` when it exists). |
+| `TOFU_GPG_BIN` | `gpg` | GnuPG binary found in `PATH`, or an absolute path (used to decrypt the encrypted variable file). |
+| `TOFU_VARS_GPG_FILE` | *(empty)* | Encrypted variable file decrypted on the fly (`terraform.tfvars.gpg` in the project directory when it exists). |
 
 The infrastructure inputs (`pve_endpoint`, `pve_api_token`, `var.vm`, `var.ct`, ...) belong to
 `terraform.tfvars` (git-ignored) — see the Variables section of `README.md`.

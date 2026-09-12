@@ -14,11 +14,13 @@ This document describes every function defined in `lib_tofu.sh`.
 ## Configuration auto-load
 
 ### `conf/tofu.conf`
-1. **Description:** At library load time, when `MY_GIT_DIR` is set and `$MY_GIT_DIR/tofu/conf/tofu.conf` exists, that file is sourced and `TOFU_BIN` / `TOFU_DIR` / `TOFU_VAR_FILE` are exported -- but only when they are not already set in the environment (the environment always wins).
+1. **Description:** At library load time, when `MY_GIT_DIR` is set and `$MY_GIT_DIR/tofu/conf/tofu.conf` exists, that file is sourced and `TOFU_BIN` / `TOFU_DIR` / `TOFU_VAR_FILE` / `TOFU_GPG_BIN` / `TOFU_VARS_GPG_FILE` are exported -- but only when they are not already set in the environment (the environment always wins).
 2. **Usage:**
    - `TOFU_BIN` (string): OpenTofu binary name found in `PATH`, or an absolute path (default `tofu`).
    - `TOFU_DIR` (string): directory holding the `.tf` files (default `$MY_GIT_DIR/tofu`).
    - `TOFU_VAR_FILE` (string): variable file used when `--var-file` is not given (default: `terraform.tfvars`, only when that file exists).
+   - `TOFU_GPG_BIN` (string): GnuPG binary name found in `PATH`, or an absolute path (default `gpg`).
+   - `TOFU_VARS_GPG_FILE` (string): encrypted variable file decrypted on the fly (default `terraform.tfvars.gpg` in the project directory).
 3. **Returns:** N/A (variables).
 
 ---
@@ -42,13 +44,63 @@ This document describes every function defined in `lib_tofu.sh`.
    - `10` (`ERROR_ARGV`) — directory unset/inexistent, or no `.tf` file inside
 
 ### `_tofu_var_file`
-1. **Description:** Resolves the variable file to use: `$1` when given, `TOFU_VAR_FILE` otherwise, and prints it as an absolute path -- a relative path is looked up in the project directory first, exactly where `tofu -chdir` resolves it. An unset/empty value is accepted (no variable file).
+1. **Description:** Resolves the variable file to use: `$1` when given, `TOFU_VAR_FILE` otherwise, then the encrypted `terraform.tfvars.gpg` and finally `terraform.tfvars`, and prints it as an absolute path -- a relative path is looked up in the project directory first, exactly where `tofu -chdir` resolves it. An encrypted file is returned as-is: `_tofu_var_decrypt` turns it into a temporary plaintext file. An unset/empty value is accepted (no variable file).
 2. **Usage:**
    - `_tofu_var_file "prod.tfvars"` — outputs the absolute path of the file, wherever it was found
-   - `_tofu_var_file` — outputs the absolute path of `terraform.tfvars` when that file exists in the project, otherwise nothing
+   - `_tofu_var_file` — outputs the absolute path of `terraform.tfvars.gpg` (else `terraform.tfvars`) when present in the project, otherwise nothing
 3. **Returns:**
    - `0` — variable file resolved; outputs its absolute path (possibly empty) on stdout
    - `10` (`ERROR_ARGV`) — the requested/configured path does not exist or is a directory
+
+### `_tofu_gpg_bin`
+1. **Description:** Resolves the GnuPG binary from `TOFU_GPG_BIN` (default `gpg`) and checks it is usable.
+2. **Usage:**
+   - `_tofu_gpg_bin` — outputs `gpg` or `/usr/bin/gpg`
+3. **Returns:**
+   - `0` — the binary is usable; outputs its name/path on stdout
+   - `10` (`ERROR_ARGV`) — no usable `gpg` binary found
+
+### `_tofu_vars_gpg_file`
+1. **Description:** Resolves the encrypted variable file from `TOFU_VARS_GPG_FILE` (a relative path is looked up in the project directory), defaulting to `terraform.tfvars.gpg`, and outputs it only when that file exists.
+2. **Usage:**
+   - `_tofu_vars_gpg_file` — outputs `/root/git/tofu/terraform.tfvars.gpg` when the file exists, nothing otherwise
+3. **Returns:**
+   - `0` — resolution done; outputs the absolute path, or nothing when no encrypted variable file is found
+   - `10` (`ERROR_ARGV`) — no usable project directory, or the configured path is missing/a directory
+
+### `_tofu_gpg_decrypt`
+1. **Description:** Decrypts an OpenPGP file with GnuPG into `$2` (mode `600`) without ever echoing its content, and fails when GnuPG fails: the caller must not fall back to another variable file.
+2. **Usage:**
+   - `_tofu_gpg_decrypt "$TOFU_DIR/terraform.tfvars.gpg" "/tmp/tofu-varfile.A1b2C3"`
+3. **Returns:**
+   - `0` — the file was decrypted into `$2`
+   - `10` (`ERROR_ARGV`) — `$2` empty, `$1` missing/not a file, or no usable `gpg` binary
+   - `1` — GnuPG could not decrypt (wrong/refused passphrase, missing key, corrupt file)
+
+### `_tofu_gpg_encrypt`
+1. **Description:** Encrypts a file with GnuPG using a passphrase (`--symmetric`, AES256) into `$2` (mode `600`): the passphrase is asked on the terminal, so no keyring, agent or pinentry program is involved.
+2. **Usage:**
+   - `_tofu_gpg_encrypt "$TOFU_DIR/terraform.tfvars" "$TOFU_DIR/terraform.tfvars.gpg"`
+3. **Returns:**
+   - `0` — the file was encrypted into `$2`
+   - `10` (`ERROR_ARGV`) — `$2` empty, `$1` missing/not a file, or no usable `gpg` binary
+   - `1` — GnuPG could not encrypt (passphrase refused, cancelled, ...)
+
+### `_tofu_var_decrypt`
+1. **Description:** Outputs the variable file to hand to `-var-file`: `$1` unchanged when it is a plain `*.tfvars`, or `$2` once an OpenPGP `*.gpg` file has been decrypted into it. Empty in, empty out (no variable file).
+2. **Usage:**
+   - `_tofu_var_decrypt "terraform.tfvars.gpg" "/tmp/tofu-varfile.A1b2C3"` — outputs the temporary plaintext path
+3. **Returns:**
+   - `0` — the path to use was output on stdout (possibly empty)
+   - `10` (`ERROR_ARGV`) — no usable `gpg` binary for an encrypted file
+   - `1` — the decryption failed
+
+### `_tofu_var_cleanup`
+1. **Description:** Removes the temporary plaintext file created for an encrypted variable file (`no-op` when `$1` is empty), and never touches anything else.
+2. **Usage:**
+   - `_tofu_var_cleanup "/tmp/tofu-varfile.A1b2C3"` — removes that file
+3. **Returns:**
+   - `0` — the temporary file is gone (or there was none)
 
 ### `_tofu_run`
 1. **Description:** Runs the resolved `tofu` binary inside the project directory (`-chdir`) and outputs its combined stdout/stderr; this is the only place where the binary is executed, so tests can stub it.
@@ -115,34 +167,34 @@ This document describes every function defined in `lib_tofu.sh`.
 ## Lifecycle Commands
 
 ### `_tofu_plan`
-1. **Description:** Shows the execution plan (`tofu plan -input=false`), optionally with a variable file and/or saving the plan to a file (keep it out of git: `*.tfplan` is ignored). `--dry-run` never writes the plan file.
+1. **Description:** Shows the execution plan (`tofu plan -input=false`), optionally with a variable file and/or saving the plan to a file (keep it out of git: `*.tfplan` is ignored). An encrypted `terraform.tfvars.gpg` is decrypted on the fly into a temporary file. `--dry-run` never writes the plan file.
 2. **Usage:**
    - `my_warp.sh --lib tofu tofu_plan`
    - `my_warp.sh --lib tofu tofu_plan --out change.tfplan`
 3. **Returns:**
    - `0` — the plan was produced
-   - `10` (`ERROR_ARGV`) — variable file missing, or no usable binary/directory
-   - `1` — the `tofu plan` command failed.
+   - `10` (`ERROR_ARGV`) — variable file missing or unusable, or no usable binary/directory
+   - `1` — the `tofu plan` command failed, or the encrypted variable file could not be decrypted.
 
 ### `_tofu_apply`
-1. **Description:** Applies the configuration (`tofu apply -auto-approve`). Requires `--force` (or `TOFU_CONFIRM=true`); under `--dry-run` it only shows the plan.
+1. **Description:** Applies the configuration (`tofu apply -auto-approve`). Requires `--force` (or `TOFU_CONFIRM=true`); under `--dry-run` it only shows the plan. An encrypted `terraform.tfvars.gpg` is decrypted on the fly into a temporary file.
 2. **Usage:**
    - `my_warp.sh --lib tofu --force tofu_apply`
    - `my_warp.sh --lib tofu --dry-run tofu_apply` — read-only preview
 3. **Returns:**
    - `0` — the apply (or the dry-run plan) succeeded
    - `10` (`ERROR_ARGV`) — no `--force`, invalid variable file, or no usable binary/directory
-   - `1` — the `tofu apply` command failed.
+   - `1` — the `tofu apply` command failed, or the encrypted variable file could not be decrypted.
 
 ### `_tofu_destroy`
-1. **Description:** Destroys the managed guests (`tofu destroy -auto-approve`). Requires `--force` (or `TOFU_CONFIRM=true`); under `--dry-run` it only shows the destroy plan.
+1. **Description:** Destroys the managed guests (`tofu destroy -auto-approve`). Requires `--force` (or `TOFU_CONFIRM=true`); under `--dry-run` it only shows the destroy plan. An encrypted `terraform.tfvars.gpg` is decrypted on the fly into a temporary file.
 2. **Usage:**
    - `my_warp.sh --lib tofu --force tofu_destroy`
    - `my_warp.sh --lib tofu --dry-run tofu_destroy` — read-only preview
 3. **Returns:**
    - `0` — the destroy (or the dry-run plan) succeeded
    - `10` (`ERROR_ARGV`) — no `--force`, invalid variable file, or no usable binary/directory
-   - `1` — the `tofu destroy` command failed.
+   - `1` — the `tofu destroy` command failed, or the encrypted variable file could not be decrypted.
 
 ### `_tofu_output`
 1. **Description:** Prints the outputs of the state as JSON (`tofu output -json`), either every output or a single one when `--name` is given.
@@ -194,6 +246,16 @@ This document describes every function defined in `lib_tofu.sh`.
    - `0` — every variable is documented in both files
    - `10` (`ERROR_ARGV`) — project directory, `variables.tf` or `README.md` missing
    - `1` — at least one variable is undocumented
+
+### `_tofu_vars_encrypt`
+1. **Description:** Encrypts a variable file into a passphrase-protected file with GnuPG (`--symmetric`, AES256, passphrase asked on the terminal) -- bootstrap and tests only: the normal way to edit `terraform.tfvars.gpg` is an EasyPG-capable editor.
+2. **Usage:**
+   - `my_warp.sh --lib tofu tofu_vars_encrypt` — encrypts terraform.tfvars into terraform.tfvars.gpg
+   - `my_warp.sh --lib tofu tofu_vars_encrypt --var-file lab.tfvars --out lab.tfvars.gpg`
+3. **Returns:**
+   - `0` — the file was encrypted (or would be, under `--dry-run`); outputs the encrypted path
+   - `10` (`ERROR_ARGV`) — source file missing, destination already existing without `--force`, or no usable `gpg` binary
+   - `1` — GnuPG failed to encrypt (passphrase refused or cancelled).
 
 ---
 
