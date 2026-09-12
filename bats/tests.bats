@@ -967,6 +967,18 @@ ct = { dns = { ct_name = "dns", ct_ip = "10.0.10.21/24", ct_datastore_storage_lo
     assert_success
 }
 
+@test "project => the provider reads the SSH key file itself" {
+    run grep -q 'file(var.pve_ssh_private_key_file)' "$TOFU_PROJECT/providers.tf"
+    assert_success
+}
+
+@test "project => no variable file calls a function" {
+    # A *.tfvars file accepts literals only: a function call there (file(), ...) makes
+    # every plan fail with "Function calls not allowed". The call belongs to a *.tf file.
+    run grep -E '=[[:space:]]*[a-z_]+[(]' "$TOFU_PROJECT/terraform.tfvars.example"
+    assert_failure
+}
+
 @test "project => the cloud-init snippets are namespaced with the prefix variable" {
     run grep -q 'snippet_name_prefix}-user-config.yaml' "$TOFU_PROJECT/cloud-init.tf"
     assert_success

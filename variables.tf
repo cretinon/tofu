@@ -94,10 +94,16 @@ variable "pve_ssh_username" {
 }
 
 variable "pve_ssh_private_key" {
-  description = "PEM private key used when no ssh-agent is available (empty = use the agent or the API password)."
+  description = "PEM private key used when no ssh-agent is available (empty = use the agent or the API password). Takes precedence over pve_ssh_private_key_file."
   type        = string
   default     = ""
   sensitive   = true
+}
+
+variable "pve_ssh_private_key_file" {
+  description = "Path of the PEM private key read with file() for the node SSH connection when pve_ssh_private_key is empty (empty = use the ssh-agent or the API password). Set it when the key only exists as a file: a *.tfvars file accepts literals only, so the file() call cannot be made there."
+  type        = string
+  default     = ""
 }
 
 # --- Datastores -------------------------------------------------------------

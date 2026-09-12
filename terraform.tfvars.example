@@ -25,7 +25,7 @@ pve_node     = "pve"
 #   export TF_VAR_pve_api_token='terraform@pve!provider=00000000-0000-0000-0000-000000000000'
 
 # The same token, declared as a variable instead of an environment variable.
-# pve_api_token = "terraform@pve!provider=00000000-0000-0000-0000-000000000000"
+pve_api_token = "root@pam!opentofu=00000000-0000-0000-0000-000000000000"
 
 # API user. Still required with an API token: the provider needs a PAM user for
 # the node SSH connection unless pve_ssh_username is set.
@@ -40,21 +40,28 @@ pve_username = "root@pam"
 # PAM user). Give the PAM name without its realm.
 pve_ssh_username = "root"
 
-# PEM key used when no ssh-agent is available.
-# pve_ssh_private_key = file("~/.ssh/id_ed25519")
+# Path of the PEM private key. The project reads the file itself (with file()),
+# which is how a key on disk is used without loading it into an ssh-agent.
+pve_ssh_private_key_file = "/root/.ssh/id_rsa"
+
+# The PEM content itself, when it must come from this file rather than from a
+# path or the agent. A *.tfvars file accepts literals only, so the file() call
+# belongs to pve_ssh_private_key_file above -- or export the content instead:
+#   export TF_VAR_pve_ssh_private_key="$(cat /root/.ssh/id_rsa)"
+# pve_ssh_private_key = "-----BEGIN OPENSSH PRIVATE KEY-----..."
 
 # Use the local ssh-agent for the node SSH connection.
-# pve_ssh_agent = true
+pve_ssh_agent = true
 
 # Skip TLS verification. Only for a self-signed API certificate.
-# pve_insecure = false
+pve_insecure = true
 
 # Random, uniqueness-checked ids for the guests that do not pin one.
 # pve_random_vm_ids = true
 
 # Minimum TLS version negotiated with the API. Lower it (for instance to "1.2")
 # only for an old Proxmox node.
-# pve_min_tls = "1.3"
+pve_min_tls = "1.2"
 
 # Custom provider temp directory (empty = system default).
 # pve_tmp_dir = ""
@@ -62,16 +69,16 @@ pve_ssh_username = "root"
 # --- Datastores -------------------------------------------------------------
 
 # Datastore receiving the VM images and the LXC templates.
-# images_datastore_id = "local"
+images_datastore_id = "local"
 
 # Datastore receiving the cloud-init snippets. It must have the "snippets"
 # content type enabled.
-# snippets_datastore_id = "local"
+snippets_datastore_id = "local"
 
 # Prefix of the two snippet file names. Snippet names are datastore-wide: give
 # every configuration its own prefix when several of them (or a hand-uploaded
 # snippet) share the datastore.
-# snippet_name_prefix = "tofu"
+snippet_name_prefix = "tofu"
 
 # --- Networking and access --------------------------------------------------
 
@@ -113,7 +120,8 @@ vm = {
     vm_cores                      = 2
     vm_memory                     = 2048
     vm_disk_size                  = 20
-    vm_tags                       = ["debian", "web"]
+    vm_tags                       = ["debian13-vm", "tofu"]
+    vm_bridge                     = "vmbr1"
   }
 
   # Every other attribute is optional and its default comes from variables.tf.
@@ -128,6 +136,7 @@ vm = {
   #   vm_ip                            = "dhcp"
   #   vm_datastore_storage_location    = "local-lvm"
   #   vm_source_image                  = "debian12"
+  #   vm_bridge                        = "vmbr1"
   #   vm_id                            = 131
   #   vm_memory                        = 4096
   #   vm_floating_memory               = 1024
@@ -151,7 +160,8 @@ ct = {
     ct_cores                      = 1
     ct_memory                     = 512
     ct_disk_size                  = 8
-    ct_tags                       = ["debian", "dns"]
+    ct_tags                       = ["debian13-ct", "tofu"]
+    ct_bridge                     = "vmbr1"
     ct_id                         = 121
 
     # Proxmox protection flag: the container then refuses to be destroyed or

@@ -37,9 +37,11 @@ provider "proxmox" {
   # Pin or randomise VM/CT ids instead of racing on the "next free id".
   random_vm_ids = var.pve_random_vm_ids
 
+  # The provider only accepts the key itself, never a path: the file is read here,
+  # where function calls are allowed (a *.tfvars file cannot call file()).
   ssh {
     agent       = var.pve_ssh_agent
     username    = var.pve_ssh_username != "" ? var.pve_ssh_username : null
-    private_key = var.pve_ssh_private_key != "" ? var.pve_ssh_private_key : null
+    private_key = var.pve_ssh_private_key != "" ? var.pve_ssh_private_key : (var.pve_ssh_private_key_file != "" ? file(var.pve_ssh_private_key_file) : null)
   }
 }

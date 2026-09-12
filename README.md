@@ -104,7 +104,8 @@ while other guests are untouched.
 
 ### Workstation side
 
-- `tofu` ≥ 1.6 and `ssh`/`ssh-agent` (or a PEM private key via `pve_ssh_private_key`).
+- `tofu` ≥ 1.6 and an SSH key for the node: either loaded in an `ssh-agent`, or on disk
+  through `pve_ssh_private_key_file`, or given as PEM content via `pve_ssh_private_key`.
 
 ---
 
@@ -308,7 +309,8 @@ ${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_destroy --force
 | `pve_random_vm_ids` | bool | `true` | Random, uniqueness-checked ids for guests that do not pin one. |
 | `pve_ssh_agent` | bool | `true` | Use the local ssh-agent for the node SSH connection. |
 | `pve_ssh_username` | string | `""` | SSH user on the node; **required with an API token**. |
-| `pve_ssh_private_key` | string (sensitive) | `""` | PEM key used when no agent is available. |
+| `pve_ssh_private_key` | string (sensitive) | `""` | PEM **content** used when no agent is available; takes precedence over the path below. |
+| `pve_ssh_private_key_file` | string | `""` | Path of a PEM key the project reads with `file()` — the way to use a key file without an ssh-agent (`~/.ssh` is never scanned, and a `.tfvars` file cannot call `file()`). |
 
 ### Datastores
 
@@ -579,6 +581,7 @@ wrapper never auto-approves on its own, and `--dry-run` always stays read-only.
 |---|---|
 | `no file exists at cloud-init/...` | A snippet source file is missing — check `cloud-init/`. |
 | Snippet upload fails with a permission/sudo error | Snippets are not enabled on the datastore, or the SSH user lacks the `NOPASSWD` sudo rules listed above. |
+| `unable to authenticate user "root" over SSH … no supported methods remain` | The provider takes its key only from the ssh-agent or `pve_ssh_private_key`; it never reads `~/.ssh/id_rsa` (and ignores `~/.ssh/config`). Load the key with `ssh-add`, or point `pve_ssh_private_key_file` at the key. |
 | `only root can set 'arch' config` / `user != root@pam` | Some operations are refused for API tokens: use `root@pam` password authentication for those runs. |
 | `Plan`/`Refresh` hangs for minutes, then times out | `agent.enabled = true` while `qemu-guest-agent` is not running in the guest. The vendor data installs it; a disk check in the guest can also delay it. `stop_on_destroy` keeps destroys from hanging. |
 | Tags show a permanent diff | Tags are sorted by Proxmox; the resources apply `sort()` accordingly — keep `ct_tags`/`vm_tags` free of duplicates. |
