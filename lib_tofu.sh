@@ -11,24 +11,22 @@
 # doc-verbatim: ## Configuration auto-load
 # doc-verbatim:
 # doc-verbatim: ### `conf/tofu.conf`
-# doc-verbatim: 1. **Description:** At library load time, when `MY_GIT_DIR` is set and `$MY_GIT_DIR/tofu/conf/tofu.conf` exists, that file is sourced and `TOFU_BIN` / `TOFU_DIR` / `TOFU_VAR_FILE` / `TOFU_GPG_BIN` / `TOFU_VARS_GPG_FILE` are exported -- but only when they are not already set in the environment (the environment always wins).
+# doc-verbatim: 1. **Description:** At library load time, when `MY_GIT_DIR` is set and `$MY_GIT_DIR/tofu/conf/tofu.conf` exists, that file is sourced and `TOFU_BIN` / `TOFU_DIR` / `TOFU_VAR_FILE` / `TOFU_VARS_GPG_FILE` are exported -- but only when they are not already set in the environment (the environment always wins).
 # doc-verbatim: 2. **Usage:**
 # doc-verbatim:    - `TOFU_BIN` (string): OpenTofu binary name found in `PATH`, or an absolute path (default `tofu`).
 # doc-verbatim:    - `TOFU_DIR` (string): directory holding the `.tf` files (default `$MY_GIT_DIR/tofu`).
 # doc-verbatim:    - `TOFU_VAR_FILE` (string): variable file used when `--var-file` is not given (default: `terraform.tfvars`, only when that file exists).
-# doc-verbatim:    - `TOFU_GPG_BIN` (string): GnuPG binary name found in `PATH`, or an absolute path (default `gpg`).
-# doc-verbatim:    - `TOFU_VARS_GPG_FILE` (string): encrypted variable file decrypted on the fly (default `terraform.tfvars.gpg` in the project directory).
+# doc-verbatim:    - `TOFU_VARS_GPG_FILE` (string): encrypted variable file decrypted on the fly (default `terraform.tfvars.gpg` in the project directory); GnuPG itself is reached through the shell runtime's `GPG` (default `gpg`).
 # doc-verbatim: 3. **Returns:** N/A (variables).
 # doc-verbatim:
 # doc-verbatim: ---
 # doc-verbatim:
 if [ -n "$MY_GIT_DIR" ] && [ -f "$MY_GIT_DIR/tofu/conf/tofu.conf" ]; then
-    if [ -z "${TOFU_BIN:-}" ] || [ -z "${TOFU_DIR:-}" ] || [ -z "${TOFU_GPG_BIN:-}" ]; then
+    if [ -z "${TOFU_BIN:-}" ] || [ -z "${TOFU_DIR:-}" ]; then
         source "$MY_GIT_DIR/tofu/conf/tofu.conf"
         export TOFU_BIN
         export TOFU_DIR
         export TOFU_VAR_FILE
-        export TOFU_GPG_BIN
         export TOFU_VARS_GPG_FILE
     fi
 fi
@@ -114,24 +112,6 @@ _tofu_var_file () {
     _func_end "0" ; return 0
 }
 
-# call: _tofu_gpg_bin ()
-# description: Resolves the GnuPG binary from `TOFU_GPG_BIN` (default `gpg`) and checks it is usable.
-# example: `_tofu_gpg_bin` — outputs `gpg` or `/usr/bin/gpg`
-# return: `0` — the binary is usable; outputs its name/path on stdout
-# return: `10` (`ERROR_ARGV`) — no usable `gpg` binary found
-_tofu_gpg_bin () {
-    _func_start
-
-    local __bin="${TOFU_GPG_BIN:-gpg}"
-    local __result="${TOFU_GPG_BIN:-gpg}"
-
-    if ! _installed "$__bin"; then _error "TOFU_GPG_BIN: no usable '$__bin' binary (install GnuPG or set TOFU_GPG_BIN)" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-
-    echo "$__result"
-
-    _func_end "0" ; return 0
-}
-
 # call: _tofu_vars_gpg_file ()
 # description: Resolves the encrypted variable file from `TOFU_VARS_GPG_FILE` (a relative path is looked up in the project directory), defaulting to `terraform.tfvars.gpg`, and outputs it only when that file exists.
 # example: `_tofu_vars_gpg_file` — outputs `/root/git/tofu/terraform.tfvars.gpg` when the file exists, nothing otherwise
@@ -165,64 +145,6 @@ _tofu_vars_gpg_file () {
     _func_end "0" ; return 0
 }
 
-# call: _tofu_gpg_decrypt ($1:file) ($2:dest)
-# description: Decrypts an OpenPGP file with GnuPG into `$2` (mode `600`) without ever echoing its content, and fails when GnuPG fails: the caller must not fall back to another variable file.
-# example: `_tofu_gpg_decrypt "$TOFU_DIR/terraform.tfvars.gpg" "/tmp/tofu-varfile.A1b2C3"`
-# return: `0` — the file was decrypted into `$2`
-# return: `10` (`ERROR_ARGV`) — `$2` empty, `$1` missing/not a file, or no usable `gpg` binary
-# return: `1` — GnuPG could not decrypt (wrong/refused passphrase, missing key, corrupt file)
-_tofu_gpg_decrypt () {
-    _func_start "$@"
-
-    local __file="${1:-}"
-    local __dest="${2:-}"
-    local __bin
-    local __return=0
-
-    if ! _exist "$__dest"; then _error "DEST: no destination given for the decrypted variable file" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if ! _fileexist "$__file"; then _error "FILE: '$__file' not found" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if [ -d "$__file" ]; then _error "FILE: '$__file' is a directory, not a file" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if ! __bin=$(_tofu_gpg_bin); then _error "BIN: no usable gpg binary" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-
-    # Loopback pinentry: GnuPG asks the passphrase on the terminal itself, so no keyring,
-    # agent, pinentry program or DISPLAY is involved, and nothing is cached. Its messages
-    # are left on the terminal (the passphrase prompt must stay visible); the plaintext
-    # goes to $__dest only.
-    if ! "$__bin" --yes --pinentry-mode loopback --output "$__dest" --decrypt "$__file" > /dev/null; then
-        _error "GPG: could not decrypt '$__file' (wrong passphrase, missing key or corrupt file)" ; __return=1
-    fi
-    if [ "$__return" == "0" ]; then chmod 600 "$__dest" 2>/dev/null ; fi
-
-    _func_end "$__return" ; return "$__return"
-}
-
-# call: _tofu_gpg_encrypt ($1:file) ($2:dest)
-# description: Encrypts a file with GnuPG using a passphrase (`--symmetric`, AES256) into `$2` (mode `600`): the passphrase is asked on the terminal, so no keyring, agent or pinentry program is involved.
-# example: `_tofu_gpg_encrypt "$TOFU_DIR/terraform.tfvars" "$TOFU_DIR/terraform.tfvars.gpg"`
-# return: `0` — the file was encrypted into `$2`
-# return: `10` (`ERROR_ARGV`) — `$2` empty, `$1` missing/not a file, or no usable `gpg` binary
-# return: `1` — GnuPG could not encrypt (passphrase refused, cancelled, ...)
-_tofu_gpg_encrypt () {
-    _func_start "$@"
-
-    local __file="${1:-}"
-    local __dest="${2:-}"
-    local __bin
-    local __return=0
-
-    if ! _exist "$__dest"; then _error "DEST: no destination given for the encrypted variable file" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if ! _fileexist "$__file"; then _error "FILE: '$__file' not found" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if [ -d "$__file" ]; then _error "FILE: '$__file' is a directory, not a file" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if ! __bin=$(_tofu_gpg_bin); then _error "BIN: no usable gpg binary" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-
-    if ! "$__bin" --yes --pinentry-mode loopback --symmetric --cipher-algo AES256 --output "$__dest" -- "$__file" > /dev/null; then
-        _error "GPG: could not encrypt '$__file' into '$__dest' (passphrase refused or cancelled)" ; __return=1
-    fi
-    if [ "$__return" == "0" ]; then chmod 600 "$__dest" 2>/dev/null ; fi
-
-    _func_end "$__return" ; return "$__return"
-}
-
 # call: _tofu_var_decrypt ($1:var-file) ($2:dest)
 # description: Outputs the variable file to hand to `-var-file`: `$1` unchanged when it is a plain `*.tfvars`, or `$2` once an OpenPGP `*.gpg` file has been decrypted into it. Empty in, empty out (no variable file).
 # example: `_tofu_var_decrypt "terraform.tfvars.gpg" "/tmp/tofu-varfile.A1b2C3"` — outputs the temporary plaintext path
@@ -239,7 +161,7 @@ _tofu_var_decrypt () {
 
     if _exist "$__file"; then
         if [ "${__file##*.}" == "gpg" ]; then
-            _tofu_gpg_decrypt "$__file" "$__dest" || __return=$?
+            _gpg_decrypt "$__file" "$__dest" || __return=$?
             if [ "$__return" == "0" ]; then __result="$__dest" ; fi
         else
             __result="$__file"
@@ -650,13 +572,13 @@ _tofu_vars_encrypt () {
     if [ -d "$__src" ]; then _error "FILE: '$__src' is a directory, not a file" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
     if ! _exist "$__out"; then __out="$__dir/terraform.tfvars.gpg" ; elif [ "${__out#/}" == "$__out" ]; then __out="$__dir/$__out" ; fi
     if [ -e "$__out" ] && [ "${FORCE:-false}" != "true" ]; then _error "OUT: '$__out' already exists (use --force to overwrite it)" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
-    if ! _tofu_gpg_bin > /dev/null; then _error "BIN: no usable gpg binary" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
+    if ! _gpg_bin > /dev/null; then _error "BIN: no usable gpg binary" ; _func_end "$ERROR_ARGV" ; return "$ERROR_ARGV" ; fi
 
     if [ "${DRY_RUN:-false}" == "true" ]; then
         _info "DRY_RUN: not encrypting '$__src' into '$__out'"
         __result="$__out"
     else
-        _tofu_gpg_encrypt "$__src" "$__out" || __return=$?
+        _gpg_encrypt "$__src" "$__out" || __return=$?
         if [ "$__return" == "0" ]; then __result="$__out" ; fi
     fi
 
@@ -677,7 +599,7 @@ _usage_tofu () {
     echo "  * Project directory : \$TOFU_DIR (default \$MY_GIT_DIR/tofu)"
     echo "  * Binary           : \$TOFU_BIN (default tofu)"
     echo "  * Variable file    : --var-file (\$TOFU_VAR_FILE, then terraform.tfvars.gpg, else terraform.tfvars)"
-    echo "  * Encrypted vars   : \${TOFU_VARS_GPG_FILE:-terraform.tfvars.gpg} is decrypted on the fly (GnuPG: \${TOFU_GPG_BIN:-gpg}; passphrase asked on the terminal)"
+    echo "  * Encrypted vars   : \${TOFU_VARS_GPG_FILE:-terraform.tfvars.gpg} is decrypted on the fly (GnuPG: \${GPG:-gpg}; passphrase asked on the terminal)"
     echo "  * Read-only mode   : --dry-run (fmt -check, plan instead of apply/destroy)"
     echo "  * tofu_apply/tofu_destroy require --force (or TOFU_CONFIRM=true)"
 

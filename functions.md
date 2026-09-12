@@ -14,13 +14,12 @@ This document describes every function defined in `lib_tofu.sh`.
 ## Configuration auto-load
 
 ### `conf/tofu.conf`
-1. **Description:** At library load time, when `MY_GIT_DIR` is set and `$MY_GIT_DIR/tofu/conf/tofu.conf` exists, that file is sourced and `TOFU_BIN` / `TOFU_DIR` / `TOFU_VAR_FILE` / `TOFU_GPG_BIN` / `TOFU_VARS_GPG_FILE` are exported -- but only when they are not already set in the environment (the environment always wins).
+1. **Description:** At library load time, when `MY_GIT_DIR` is set and `$MY_GIT_DIR/tofu/conf/tofu.conf` exists, that file is sourced and `TOFU_BIN` / `TOFU_DIR` / `TOFU_VAR_FILE` / `TOFU_VARS_GPG_FILE` are exported -- but only when they are not already set in the environment (the environment always wins).
 2. **Usage:**
    - `TOFU_BIN` (string): OpenTofu binary name found in `PATH`, or an absolute path (default `tofu`).
    - `TOFU_DIR` (string): directory holding the `.tf` files (default `$MY_GIT_DIR/tofu`).
    - `TOFU_VAR_FILE` (string): variable file used when `--var-file` is not given (default: `terraform.tfvars`, only when that file exists).
-   - `TOFU_GPG_BIN` (string): GnuPG binary name found in `PATH`, or an absolute path (default `gpg`).
-   - `TOFU_VARS_GPG_FILE` (string): encrypted variable file decrypted on the fly (default `terraform.tfvars.gpg` in the project directory).
+   - `TOFU_VARS_GPG_FILE` (string): encrypted variable file decrypted on the fly (default `terraform.tfvars.gpg` in the project directory); GnuPG itself is reached through the shell runtime's `GPG` (default `gpg`).
 3. **Returns:** N/A (variables).
 
 ---
@@ -52,14 +51,6 @@ This document describes every function defined in `lib_tofu.sh`.
    - `0` — variable file resolved; outputs its absolute path (possibly empty) on stdout
    - `10` (`ERROR_ARGV`) — the requested/configured path does not exist or is a directory
 
-### `_tofu_gpg_bin`
-1. **Description:** Resolves the GnuPG binary from `TOFU_GPG_BIN` (default `gpg`) and checks it is usable.
-2. **Usage:**
-   - `_tofu_gpg_bin` — outputs `gpg` or `/usr/bin/gpg`
-3. **Returns:**
-   - `0` — the binary is usable; outputs its name/path on stdout
-   - `10` (`ERROR_ARGV`) — no usable `gpg` binary found
-
 ### `_tofu_vars_gpg_file`
 1. **Description:** Resolves the encrypted variable file from `TOFU_VARS_GPG_FILE` (a relative path is looked up in the project directory), defaulting to `terraform.tfvars.gpg`, and outputs it only when that file exists.
 2. **Usage:**
@@ -67,24 +58,6 @@ This document describes every function defined in `lib_tofu.sh`.
 3. **Returns:**
    - `0` — resolution done; outputs the absolute path, or nothing when no encrypted variable file is found
    - `10` (`ERROR_ARGV`) — no usable project directory, or the configured path is missing/a directory
-
-### `_tofu_gpg_decrypt`
-1. **Description:** Decrypts an OpenPGP file with GnuPG into `$2` (mode `600`) without ever echoing its content, and fails when GnuPG fails: the caller must not fall back to another variable file.
-2. **Usage:**
-   - `_tofu_gpg_decrypt "$TOFU_DIR/terraform.tfvars.gpg" "/tmp/tofu-varfile.A1b2C3"`
-3. **Returns:**
-   - `0` — the file was decrypted into `$2`
-   - `10` (`ERROR_ARGV`) — `$2` empty, `$1` missing/not a file, or no usable `gpg` binary
-   - `1` — GnuPG could not decrypt (wrong/refused passphrase, missing key, corrupt file)
-
-### `_tofu_gpg_encrypt`
-1. **Description:** Encrypts a file with GnuPG using a passphrase (`--symmetric`, AES256) into `$2` (mode `600`): the passphrase is asked on the terminal, so no keyring, agent or pinentry program is involved.
-2. **Usage:**
-   - `_tofu_gpg_encrypt "$TOFU_DIR/terraform.tfvars" "$TOFU_DIR/terraform.tfvars.gpg"`
-3. **Returns:**
-   - `0` — the file was encrypted into `$2`
-   - `10` (`ERROR_ARGV`) — `$2` empty, `$1` missing/not a file, or no usable `gpg` binary
-   - `1` — GnuPG could not encrypt (passphrase refused, cancelled, ...)
 
 ### `_tofu_var_decrypt`
 1. **Description:** Outputs the variable file to hand to `-var-file`: `$1` unchanged when it is a plain `*.tfvars`, or `$2` once an OpenPGP `*.gpg` file has been decrypted into it. Empty in, empty out (no variable file).

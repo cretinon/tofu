@@ -190,13 +190,13 @@ __require_tofu() {
     TOFU_BIN="$(command -v tofu)"
 }
 
-# skips the test when GnuPG is unavailable
+# skips the test when GnuPG is unavailable (the binary comes from the shell runtime's GPG)
 __require_gpg() {
     if ! command -v gpg >/dev/null 2>&1; then
         skip "the gpg binary is not installed"
     fi
-    export TOFU_GPG_BIN
-    TOFU_GPG_BIN="$(command -v gpg)"
+    export GPG
+    GPG="$(command -v gpg)"
 }
 
 # creates a throwaway project with a throwaway keyring (never the user's), encrypts its
@@ -250,7 +250,7 @@ __plain_project() {
 __stub_gpg() {
     cat >"$TEST_DIR/bin/gpg-stub" <<'STUB'
 #!/bin/bash
-printf '%s\n' "$*" >>"$TOFU_GPG_STUB_LOG"
+printf '%s\n' "$*" >>"$GPG_STUB_LOG"
 out=""
 prev=""
 for __a in "$@"; do
@@ -258,12 +258,12 @@ for __a in "$@"; do
     prev="$__a"
 done
 if [ -n "$out" ]; then : >"$out" ; fi
-exit "${TOFU_GPG_STUB_EXIT:-0}"
+exit "${GPG_STUB_EXIT:-0}"
 STUB
     chmod +x "$TEST_DIR/bin/gpg-stub"
-    export TOFU_GPG_STUB_LOG="$TEST_DIR/gpg.log"
-    : >"$TOFU_GPG_STUB_LOG"
-    export TOFU_GPG_BIN="$TEST_DIR/bin/gpg-stub"
+    export GPG_STUB_LOG="$TEST_DIR/gpg.log"
+    : >"$GPG_STUB_LOG"
+    export GPG="$TEST_DIR/bin/gpg-stub"
 }
 
 # installs a `tofu` stub recording its argv and the content of every -var-file it receives
@@ -394,21 +394,6 @@ STUB
 }
 
 # ---------------------------------------------- B. encrypted variable file --
-@test "_tofu_gpg_bin => returns the configured binary" {
-    __require_gpg
-    run _tofu_gpg_bin
-    assert_success
-    assert_output "$TOFU_GPG_BIN"
-}
-
-@test "_tofu_gpg_bin => fails when the binary is missing" {
-    export TOFU_GPG_BIN="$TEST_DIR/nope/gpg"
-    run _tofu_gpg_bin
-    assert_failure
-    [ "$status" -eq "$ERROR_ARGV" ]
-    [[ "$output" == *"no usable"* ]]
-}
-
 @test "_tofu_vars_gpg_file => resolves terraform.tfvars.gpg inside the project" {
     __require_gpg
     __gpg_project
@@ -482,17 +467,6 @@ STUB
     [[ "$output" == *"could not decrypt"* ]]
 }
 
-@test "_tofu_gpg_decrypt => asks the passphrase on the terminal (no --batch, no capture)" {
-    __stub_gpg
-    printf 'x = "1"\n' >"$TEST_DIR/enc.gpg"
-    run _tofu_gpg_decrypt "$TEST_DIR/enc.gpg" "$TEST_DIR/dest.tfvars"
-    assert_success
-    run cat "$TOFU_GPG_STUB_LOG"
-    [[ "$output" == *"--decrypt $TEST_DIR/enc.gpg"* ]]
-    [[ "$output" == *"--pinentry-mode loopback"* ]]
-    [[ "$output" != *"--batch"* ]]
-}
-
 @test "_tofu_plan => hands the decrypted content to tofu and leaves no temporary file" {
     __require_gpg
     __gpg_project >/dev/null
@@ -518,31 +492,6 @@ STUB
     [ -z "$(ls -A "$TMPDIR")" ]
 }
 
-@test "_tofu_gpg_encrypt => encrypts symmetrically and asks the passphrase on the terminal" {
-    __stub_gpg
-    printf 'x = "1"\n' >"$TEST_DIR/plain.txt"
-    run _tofu_gpg_encrypt "$TEST_DIR/plain.txt" "$TEST_DIR/out.gpg"
-    assert_success
-    [ -f "$TEST_DIR/out.gpg" ]
-    [ "$(stat -c '%a' "$TEST_DIR/out.gpg")" == "600" ]
-    run cat "$TOFU_GPG_STUB_LOG"
-    [[ "$output" == *"--symmetric"* ]]
-    [[ "$output" == *"--cipher-algo AES256"* ]]
-    [[ "$output" == *"--pinentry-mode loopback"* ]]
-    [[ "$output" != *"--batch"* ]]
-    [[ "$output" != *"--recipient"* ]]
-}
-
-@test "_tofu_gpg_encrypt => fails when gpg fails" {
-    __stub_gpg
-    export TOFU_GPG_STUB_EXIT=2
-    printf 'x = "1"\n' >"$TEST_DIR/plain.txt"
-    run _tofu_gpg_encrypt "$TEST_DIR/plain.txt" "$TEST_DIR/out.gpg"
-    assert_failure
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"could not encrypt"* ]]
-}
-
 @test "_tofu_vars_encrypt => encrypts terraform.tfvars through the symmetric helper" {
     __stub_gpg
     __plain_project
@@ -551,7 +500,7 @@ STUB
     assert_output "$PLAIN_PROJECT/terraform.tfvars.gpg"
     [ -f "$PLAIN_PROJECT/terraform.tfvars.gpg" ]
     [ "$(stat -c '%a' "$PLAIN_PROJECT/terraform.tfvars.gpg")" == "600" ]
-    run cat "$TOFU_GPG_STUB_LOG"
+    run cat "$GPG_STUB_LOG"
     [[ "$output" == *"--output $PLAIN_PROJECT/terraform.tfvars.gpg"* ]]
 }
 
@@ -575,7 +524,7 @@ STUB
     run _tofu_vars_encrypt
     assert_success
     [ ! -f "$PLAIN_PROJECT/terraform.tfvars.gpg" ]
-    run cat "$TOFU_GPG_STUB_LOG"
+    run cat "$GPG_STUB_LOG"
     assert_output ""
 }
 
