@@ -32,11 +32,24 @@ STUB
     export TOFU_STUB_LOG="$TEST_DIR/tofu.log"
     : >"$TOFU_STUB_LOG"
 
+    # The library tests must never resolve the real project's variable files (a developer's
+    # local terraform.tfvars / terraform.tfvars.gpg live there): they get their own sandbox
+    # project. The project-invariant tests use $TOFU_PROJECT explicitly, or __real_project.
+    TOFU_SANDBOX="$TEST_DIR/proj"
+    mkdir -p "$TOFU_SANDBOX"
+    printf 'variable "x" { type = string }\n' >"$TOFU_SANDBOX/variables.tf"
+    export TOFU_SANDBOX
+
     export TOFU_BIN="$TEST_DIR/bin/tofu"
-    export TOFU_DIR="$TOFU_PROJECT"
+    export TOFU_DIR="$TOFU_SANDBOX"
     export TOFU_VAR_FILE=""
 
     unset FORCE DRY_RUN TOFU_CONFIRM
+}
+
+# points the lib back at the real project (used by the project-invariant tests)
+__real_project() {
+    export TOFU_DIR="$TOFU_PROJECT"
 }
 
 teardown() {
@@ -296,7 +309,7 @@ STUB
 @test "_tofu_dir => returns the project directory" {
     run _tofu_dir
     assert_success
-    assert_output "$TOFU_PROJECT"
+    assert_output "$TOFU_SANDBOX"
 }
 
 @test "_tofu_dir => fails on a missing directory" {
@@ -578,7 +591,7 @@ STUB
     run _tofu_run validate
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT validate"
+    assert_output "-chdir=$TOFU_SANDBOX validate"
 }
 
 @test "_tofu_run => prints the binary output" {
@@ -655,21 +668,21 @@ STUB
     run _tofu_version
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT version"
+    assert_output "-chdir=$TOFU_SANDBOX version"
 }
 
 @test "_tofu_init => defaults to an offline init (backend=false)" {
     run _tofu_init
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT init -backend=false -input=false"
+    assert_output "-chdir=$TOFU_SANDBOX init -backend=false -input=false"
 }
 
 @test "_tofu_init => --backend true runs a full init" {
     run _tofu_init "true"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT init -input=false"
+    assert_output "-chdir=$TOFU_SANDBOX init -input=false"
 }
 
 @test "_tofu_init => rejects an invalid --backend value" {
@@ -693,7 +706,7 @@ STUB
     run _tofu_fmt
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT fmt -recursive"
+    assert_output "-chdir=$TOFU_SANDBOX fmt -recursive"
 }
 
 @test "_tofu_fmt => DRY_RUN only checks the formatting" {
@@ -701,14 +714,14 @@ STUB
     run _tofu_fmt
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT fmt -check -recursive -diff"
+    assert_output "-chdir=$TOFU_SANDBOX fmt -check -recursive -diff"
 }
 
 @test "_tofu_validate => runs 'tofu validate'" {
     run _tofu_validate
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT validate"
+    assert_output "-chdir=$TOFU_SANDBOX validate"
 }
 
 @test "_tofu_validate => hints at tofu_init when validate fails" {
@@ -722,7 +735,7 @@ STUB
     run _tofu_plan
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false"
 }
 
 @test "_tofu_plan => passes the variable file" {
@@ -730,14 +743,14 @@ STUB
     run _tofu_plan "$TEST_DIR/prod.tfvars"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false -var-file=$(realpath -- "$TEST_DIR/prod.tfvars")"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false -var-file=$(realpath -- "$TEST_DIR/prod.tfvars")"
 }
 
 @test "_tofu_plan => saves the plan with --out" {
     run _tofu_plan "" "change.tfplan"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false -out=change.tfplan"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false -out=change.tfplan"
 }
 
 @test "_tofu_plan => DRY_RUN ignores --out and writes nothing" {
@@ -745,7 +758,7 @@ STUB
     run _tofu_plan "" "change.tfplan"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false"
     [ ! -e "$TOFU_PROJECT/change.tfplan" ]
 }
 
@@ -771,7 +784,7 @@ STUB
     run _tofu_apply
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT apply -input=false -auto-approve"
+    assert_output "-chdir=$TOFU_SANDBOX apply -input=false -auto-approve"
 }
 
 @test "_tofu_apply => --dry-run only shows the plan" {
@@ -779,7 +792,7 @@ STUB
     run _tofu_apply
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false"
 }
 
 @test "_tofu_apply => forwards the variable file when forced" {
@@ -788,7 +801,7 @@ STUB
     run _tofu_apply "$TEST_DIR/prod.tfvars"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT apply -input=false -auto-approve -var-file=$(realpath -- "$TEST_DIR/prod.tfvars")"
+    assert_output "-chdir=$TOFU_SANDBOX apply -input=false -auto-approve -var-file=$(realpath -- "$TEST_DIR/prod.tfvars")"
 }
 
 @test "_tofu_destroy => refuses to run without --force" {
@@ -804,7 +817,7 @@ STUB
     run _tofu_destroy
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT destroy -input=false -auto-approve"
+    assert_output "-chdir=$TOFU_SANDBOX destroy -input=false -auto-approve"
 }
 
 @test "_tofu_destroy => --dry-run only shows the destroy plan" {
@@ -812,35 +825,35 @@ STUB
     run _tofu_destroy
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false -destroy"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false -destroy"
 }
 
 @test "_tofu_output => prints every output as json" {
     run _tofu_output
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT output -json"
+    assert_output "-chdir=$TOFU_SANDBOX output -json"
 }
 
 @test "_tofu_output => selects a single output with --name" {
     run _tofu_output "vm_ids"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT output -json vm_ids"
+    assert_output "-chdir=$TOFU_SANDBOX output -json vm_ids"
 }
 
 @test "_tofu_state_list => lists the state" {
     run _tofu_state_list
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT state list"
+    assert_output "-chdir=$TOFU_SANDBOX state list"
 }
 
 @test "_tofu_show => shows the current state as json" {
     run _tofu_show
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT show -json"
+    assert_output "-chdir=$TOFU_SANDBOX show -json"
 }
 
 @test "_tofu_show => shows the plan given with --file" {
@@ -848,7 +861,7 @@ STUB
     run _tofu_show "$TEST_DIR/change.tfplan"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT show -json $TEST_DIR/change.tfplan"
+    assert_output "-chdir=$TOFU_SANDBOX show -json $TEST_DIR/change.tfplan"
 }
 
 @test "_tofu_show => fails on a missing --file" {
@@ -862,8 +875,8 @@ STUB
     run _tofu_check
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT fmt -check -recursive -diff
--chdir=$TOFU_PROJECT validate"
+    assert_output "-chdir=$TOFU_SANDBOX fmt -check -recursive -diff
+-chdir=$TOFU_SANDBOX validate"
 }
 
 @test "_tofu_check => stops before validate when the formatting differs" {
@@ -871,10 +884,11 @@ STUB
     run _tofu_check
     assert_failure
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT fmt -check -recursive -diff"
+    assert_output "-chdir=$TOFU_SANDBOX fmt -check -recursive -diff"
 }
 
 @test "_tofu_vars_doc_check => passes on the project" {
+    __real_project
     run _tofu_vars_doc_check
     assert_success
     [[ "$output" == *"every variable"* ]]
@@ -905,7 +919,7 @@ STUB
     run _process_lib_tofu "-- 'tofu_version' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT version"
+    assert_output "-chdir=$TOFU_SANDBOX version"
 }
 
 @test "_process_lib_tofu => forwards --var-file to tofu_plan" {
@@ -913,28 +927,28 @@ STUB
     run _process_lib_tofu "--var-file '$TEST_DIR/prod.tfvars' -- 'tofu_plan' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false -var-file=$(realpath -- "$TEST_DIR/prod.tfvars")"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false -var-file=$(realpath -- "$TEST_DIR/prod.tfvars")"
 }
 
 @test "_process_lib_tofu => forwards --out to tofu_plan" {
     run _process_lib_tofu "--out 'change.tfplan' -- 'tofu_plan' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT plan -input=false -out=change.tfplan"
+    assert_output "-chdir=$TOFU_SANDBOX plan -input=false -out=change.tfplan"
 }
 
 @test "_process_lib_tofu => forwards --name to tofu_output" {
     run _process_lib_tofu "--name 'vm_ids' -- 'tofu_output' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT output -json vm_ids"
+    assert_output "-chdir=$TOFU_SANDBOX output -json vm_ids"
 }
 
 @test "_process_lib_tofu => forwards --backend to tofu_init" {
     run _process_lib_tofu "--backend 'true' -- 'tofu_init' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT init -input=false"
+    assert_output "-chdir=$TOFU_SANDBOX init -input=false"
 }
 
 @test "_process_lib_tofu => forwards --file to tofu_show" {
@@ -942,21 +956,21 @@ STUB
     run _process_lib_tofu "--file '$TEST_DIR/change.tfplan' -- 'tofu_show' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT show -json $TEST_DIR/change.tfplan"
+    assert_output "-chdir=$TOFU_SANDBOX show -json $TEST_DIR/change.tfplan"
 }
 
 @test "_process_lib_tofu => dispatches tofu_fmt" {
     run _process_lib_tofu "-- 'tofu_fmt' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT fmt -recursive"
+    assert_output "-chdir=$TOFU_SANDBOX fmt -recursive"
 }
 
 @test "_process_lib_tofu => dispatches tofu_validate" {
     run _process_lib_tofu "-- 'tofu_validate' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT validate"
+    assert_output "-chdir=$TOFU_SANDBOX validate"
 }
 
 @test "_process_lib_tofu => refuses tofu_apply without --force (binary never runs)" {
@@ -972,22 +986,22 @@ STUB
     run _process_lib_tofu "-- 'tofu_destroy' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT destroy -input=false -auto-approve"
+    assert_output "-chdir=$TOFU_SANDBOX destroy -input=false -auto-approve"
 }
 
 @test "_process_lib_tofu => dispatches tofu_state_list" {
     run _process_lib_tofu "-- 'tofu_state_list' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT state list"
+    assert_output "-chdir=$TOFU_SANDBOX state list"
 }
 
 @test "_process_lib_tofu => dispatches tofu_check" {
     run _process_lib_tofu "-- 'tofu_check' --"
     assert_success
     run __stub_log
-    assert_output "-chdir=$TOFU_PROJECT fmt -check -recursive -diff
--chdir=$TOFU_PROJECT validate"
+    assert_output "-chdir=$TOFU_SANDBOX fmt -check -recursive -diff
+-chdir=$TOFU_SANDBOX validate"
 }
 
 @test "_process_lib_tofu => an unknown command prints the usage" {
@@ -1026,6 +1040,7 @@ STUB
 }
 
 @test "CLI => my_warp.sh --lib tofu tofu_vars_doc_check passes on the project" {
+    __real_project
     run "$MY_GIT_DIR/shell/my_warp.sh" --lib tofu tofu_vars_doc_check
     assert_success
 }
@@ -1033,6 +1048,7 @@ STUB
 # ------------------------------------- E. project invariants (real tofu) -----
 @test "project => tofu fmt -check is clean" {
     __require_tofu
+    __real_project
     export DRY_RUN=true
     run _tofu_fmt
     assert_success
@@ -1040,6 +1056,7 @@ STUB
 
 @test "project => tofu validate is clean" {
     __require_tofu
+    __real_project
     if [ ! -d "$TOFU_PROJECT/.terraform" ]; then
         skip "the project is not initialized (.terraform missing)"
     fi
@@ -1049,6 +1066,7 @@ STUB
 
 @test "project => tofu_check passes on the project" {
     __require_tofu
+    __real_project
     if [ ! -d "$TOFU_PROJECT/.terraform" ]; then
         skip "the project is not initialized (.terraform missing)"
     fi
