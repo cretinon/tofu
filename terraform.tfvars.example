@@ -127,10 +127,11 @@ vm = {
   # Every other attribute is optional and its default comes from variables.tf.
   # The second guest below spells some of them out, aligned the way `tofu fmt`
   # writes them, so uncommenting the whole block keeps it formatted: vm_id pins
-  # the guest id (>= 100), vm_floating_memory lets the balloon shrink down to
-  # that many MiB, and vm_protection makes Proxmox refuse to destroy the VM --
-  # do not combine it with vm_recreate_on_cloud_init_change, whose rebuild would
-  # be refused on a protected VM.
+  # the guest id (>= 100), vm_protection makes Proxmox refuse to destroy the VM
+  # -- do not combine it with vm_recreate_on_cloud_init_change, whose rebuild
+  # would be refused on a protected VM. vm_floating_memory may be left out: the
+  # balloon floor then defaults to half of vm_memory, while 0 is the way to keep
+  # the balloon device off; the value below shows an explicit floor instead.
   # "db-01" = {
   #   vm_name                          = "db-01"
   #   vm_ip                            = "dhcp"

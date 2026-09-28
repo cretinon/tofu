@@ -291,7 +291,21 @@ ${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_destroy --force
 - `vm_ip` is a CIDR (`10.0.10.11/24`) or `dhcp`: a static address must be free and outside the
   DHCP range the node serves.
 - Overriding `images` replaces the **whole** default map (`debian13`, `debian12`,
-  `debian13-ct`, `debian12-ct`), so re-declare every image still referenced.
+- Changing `vm_memory` or `vm_floating_memory` restarts the guest: memory is not hot-pluggable
+  and the provider reboots the VM itself during `tofu_apply` (`reboot_after_update` defaults to
+  `true`). The provider updates every VM **in parallel**, so a fleet-wide change — such as this
+  default balloon floor — reboots every guest at once. To stage it one guest at a time, use the
+  raw CLI (`tofu_apply` has no `-target` pass-through) with a plaintext copy of the variable
+  file, since the wrapper discards its decrypted one when the command ends:
+
+  ```shell
+  gpg --pinentry-mode loopback --decrypt "${MY_GIT_DIR}/tofu/terraform.tfvars.gpg" > /tmp/ECA/terraform.tfvars
+  tofu -chdir="${MY_GIT_DIR}/tofu" apply -target='proxmox_virtual_environment_vm.debian_vm["victoria"]' -var-file=/tmp/ECA/terraform.tfvars
+  rm -f /tmp/ECA/terraform.tfvars   # it holds the API token in clear text, like the state file
+  ```
+
+  Check the node's free memory and its ballooning target (`Datacenter > Options > Balloon
+  Target`, 80 % by default) before each guest.
 
 ---
 
@@ -363,12 +377,36 @@ Defaults: `debian13` (VM, Debian 13), `debian12` (VM, Debian 12), `debian13-ct`,
 | `vm_cores` | number | `2` | vCPUs. |
 | `vm_cpu_type` | string | `x86-64-v2-AES` | Emulated CPU type. |
 | `vm_memory` | number | `2048` | Memory (MiB). |
-| `vm_floating_memory` | number | `0` | Balloon floor in MiB; `0` disables the balloon device. |
+| `vm_floating_memory` | number | half of `vm_memory` | Balloon floor in MiB: an unset value lets the host reclaim the guest's idle memory down to half of `vm_memory`, a value pins another floor and `0` disables the balloon device. |
 | `vm_disk_size` | number | `8` | Disk size in GiB; must be ≥ the cloud image virtual size. |
 | `vm_nic_rate_limit` | number | `0` | NIC rate limit (MB/s), `0` = unlimited. |
 | `vm_id` | number | auto | Pin the VM id when set (must be ≥ 100, unique, not used by a container). |
 | `vm_protection` | bool | `false` | Set the Proxmox protection flag: the VM then cannot be destroyed. |
 | `vm_recreate_on_cloud_init_change` | bool | `false` | Rebuild the VM (destroy + recreate, disks included) when the rendered cloud-init payload changes; toggling it rebuilds once. |
+
+**Memory ballooning.** Every VM gets the balloon device: leaving `vm_floating_memory` unset sets
+the floor to **half of `vm_memory`** (1 GiB → 512, 3 GiB → 1536, 5 GiB → 2560 MiB); a number pins
+another floor and `0` turns the device off. Proxmox then keeps the node under its *ballooning
+target* (a node option, 80 % by default) by handing each guest between that floor and `vm_memory`:
+it takes memory back when the node is above the target and gives it again when the node needs it,
+so a squeeze can reach the guest's live working set — the guest's kernel answers by swapping or,
+as a last resort, by OOM-killing. The floor is what a guest can never be shrunk below, and the
+derived one is never ambiguous in practice: Proxmox rejects a `vm_memory` below 64 MiB, so half of
+it is at least 32 MiB.
+
+Ballooning needs a `virtio_balloon` driver inside the guest — every Linux kernel has one, a
+minimal image such as OpenWrt may not, and the floor is then simply never reached.
+`agent.enabled = true` (qemu-guest-agent, installed by `vendor_config`) is *not* what makes the
+balloon work: it is what lets Proxmox read the guest's real usage and reboot it gracefully.
+Containers are not concerned: an LXC has no balloon, `ct_memory` is a hard cgroup limit.
+
+The change takes effect at the next **reboot**, which the provider performs itself during
+`tofu_apply` (`reboot_after_update` defaults to `true`) — memory is not hot-pluggable.
+
+> Check the guest's swap (`swapon --show`) before pinning a very low floor: the cloud images used
+> here come without a swap file, so a guest squeezed below its working set has nothing to page out
+> to and OOM-kills instead. See the Proxmox VE memory documentation linked at the end of this
+> file for the node-side rules.
 
 ### `ct` — LXC containers
 
@@ -391,11 +429,12 @@ Defaults: `debian13` (VM, Debian 13), `debian12` (VM, Debian 12), `debian13-ct`,
 | `ct_protection` | bool | `false` | Set the Proxmox protection flag: the container then cannot be destroyed or updated. |
 | `ct_root_password` | string | `null` | Root password; leave unset for SSH-key-only access (it is stored in clear text in the local state). |
 
-Every value is validated: IPs must be CIDR (or `dhcp`), sizes must be positive, DNS servers and
-the gateway must be IPv4, keys must look like OpenSSH public keys, `ct_os_type` must be a Proxmox
-container type, a pinned `vm_id`/`ct_id` must be ≥ 100, unique and not shared with the other
-guest kind, and referencing an unknown or wrong-typed image key fails with an explicit message
-(a `precondition`, evaluated during `plan`).
+Every value is validated: IPs must be CIDR (or `dhcp`), sizes must be positive, the balloon floor
+must not be negative nor exceed `vm_memory` (both checks only apply when a value is set: unset
+means half of `vm_memory`), DNS servers and the gateway must be IPv4, keys must look like
+OpenSSH public keys, `ct_os_type` must be a Proxmox container type, a pinned `vm_id`/`ct_id` must
+be ≥ 100, unique and not shared with the other guest kind, and referencing an unknown or
+wrong-typed image key fails with an explicit message (a `precondition`, evaluated during `plan`).
 
 ---
 
@@ -652,6 +691,7 @@ exist on disk.
   - `virtual_environment_download_file` — <https://registry.terraform.io/providers/bpg/proxmox/latest/docs/resources/virtual_environment_download_file>
 - OpenTofu registry — <https://registry.opentofu.org/> (the source the committed `.terraform.lock.hcl` pins)
 - Proxmox VE — cloud-init support — <https://pve.proxmox.com/wiki/Cloud-Init_Support>
+- Proxmox VE — memory and ballooning — <https://pve.proxmox.com/pve-docs/pve-admin-guide.html#qm_memory>
 - Proxmox VE — privileges (`pveum`) — <https://pve.proxmox.com/pve-docs/pveum.1.html>
 - Debian cloud images — <https://cloud.debian.org/images/cloud/>
 - Proxmox LXC templates — <http://download.proxmox.com/images/system/>

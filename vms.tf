@@ -33,8 +33,9 @@ resource "proxmox_virtual_environment_vm" "debian_vm" {
 
   memory {
     dedicated = each.value.vm_memory
-    # 0 disables the balloon device (provider default).
-    floating = each.value.vm_floating_memory
+    # Unset balloons the guest down to half of its memory; an explicit value pins
+    # another floor and 0 keeps the balloon device disabled (provider default).
+    floating = coalesce(each.value.vm_floating_memory, floor(each.value.vm_memory / 2))
   }
 
   disk {

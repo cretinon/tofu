@@ -96,6 +96,18 @@ output "vm_ct_id_space" {
   }
 }
 VAREOF
+
+    # The balloon floor expression is NOT copied here: it is read from the real vms.tf, so the
+    # plan cases below exercise the shipped derivation (the only rewrite is `each.value` -> `v`).
+    # Rewriting that line in vms.tf makes the extraction empty and the plan fail loudly.
+    local __floor
+    __floor="$(sed -n 's/^[[:space:]]*floating = \(.*\)$/\1/p' "$TOFU_PROJECT/vms.tf" | head -n 1)"
+    cat >>"$__h/main.tf" <<VAREOF2
+
+output "vm_balloon_floor" {
+  value = { for k, v in var.vm : k => ${__floor//each.value./v.} }
+}
+VAREOF2
     printf '%s\n' \
         'pve_endpoint = "https://pve.example.com:8006/"' \
         'pve_username = "root@pam"' \
@@ -1098,6 +1110,50 @@ STUB
     __var_case 'vm = { web = { vm_name = "web", vm_ip = "10.0.10.11/24", vm_datastore_storage_location = "local-lvm", vm_id = 101 }, db = { vm_name = "db", vm_ip = "10.0.10.12/24", vm_datastore_storage_location = "local-lvm", vm_id = 101 } }' "vm_id must be unique"
 }
 
+@test "project => a balloon floor above vm_memory is rejected" {
+    __require_tofu
+    __var_harness >/dev/null
+    __var_case 'vm = { web = { vm_name = "web", vm_ip = "10.0.10.11/24", vm_datastore_storage_location = "local-lvm", vm_memory = 1024, vm_floating_memory = 2048 } }' "must not exceed vm_memory"
+}
+
+@test "project => a negative balloon floor is rejected" {
+    __require_tofu
+    __var_harness >/dev/null
+    __var_case 'vm = { web = { vm_name = "web", vm_ip = "10.0.10.11/24", vm_datastore_storage_location = "local-lvm", vm_memory = 1024, vm_floating_memory = -1 } }' "must not be negative"
+}
+
+@test "project => an unset balloon floor is half of vm_memory" {
+    __require_tofu
+    __var_harness >/dev/null
+    local __h="$TEST_DIR/vars"
+    printf '%s\n' 'vm = { web = { vm_name = "web", vm_ip = "10.0.10.11/24", vm_datastore_storage_location = "local-lvm", vm_memory = 2048 } }' >"$__h/case.tfvars"
+    run tofu -chdir="$__h" plan -no-color -input=false -var-file=base.tfvars -var-file=case.tfvars
+    assert_success
+    assert_output --partial 'web = 1024'
+}
+
+@test "project => an explicit balloon floor and 0 both win over the default" {
+    __require_tofu
+    __var_harness >/dev/null
+    local __h="$TEST_DIR/vars"
+    printf '%s\n' 'vm = { web = { vm_name = "web", vm_ip = "10.0.10.11/24", vm_datastore_storage_location = "local-lvm", vm_memory = 5120, vm_floating_memory = 1024 }, off = { vm_name = "off", vm_ip = "10.0.10.12/24", vm_datastore_storage_location = "local-lvm", vm_memory = 1024, vm_floating_memory = 0 } }' >"$__h/case.tfvars"
+    run tofu -chdir="$__h" plan -no-color -input=false -var-file=base.tfvars -var-file=case.tfvars
+    assert_success
+    assert_output --partial 'web = 1024'
+    assert_output --partial 'off = 0'
+}
+
+@test "project => a balloon floor equal to vm_memory is accepted" {
+    # equality is legal (a fixed allocation, no ballooning in practice): the bound is <=, not <
+    __require_tofu
+    __var_harness >/dev/null
+    local __h="$TEST_DIR/vars"
+    printf '%s\n' 'vm = { web = { vm_name = "web", vm_ip = "10.0.10.11/24", vm_datastore_storage_location = "local-lvm", vm_memory = 1024, vm_floating_memory = 1024 } }' >"$__h/case.tfvars"
+    run tofu -chdir="$__h" plan -no-color -input=false -var-file=base.tfvars -var-file=case.tfvars
+    assert_success
+    assert_output --partial 'web = 1024'
+}
+
 @test "project => vm_admin_user rejects an invalid user name" {
     __require_tofu
     __var_harness >/dev/null
@@ -1281,5 +1337,34 @@ ct = { dns = { ct_name = "dns", ct_ip = "10.0.10.21/24", ct_datastore_storage_lo
     run grep -q 'tofu_apply' "$TOFU_PROJECT/README.md"
     assert_success
     run grep -q '\-\-force' "$TOFU_PROJECT/README.md"
+    assert_success
+}
+
+@test "project => the balloon floor is derived in vms.tf from vm_memory" {
+    # a deliberately literal pin (format-sensitive): the behavioural cases below read the
+    # expression out of vms.tf, this one catches a rewrite of the line itself
+    run grep -q 'floating = coalesce(each.value.vm_floating_memory, floor(each.value.vm_memory / 2))' "$TOFU_PROJECT/vms.tf"
+    assert_success
+}
+
+@test "project => the balloon floor variable has no literal default in variables.tf" {
+    # unset must stay null so vms.tf derives the floor: a default of 0 would silently
+    # keep the balloon device off on every VM that does not spell the attribute out
+    run grep -q 'vm_floating_memory               = optional(number)' "$TOFU_PROJECT/variables.tf"
+    assert_success
+    run grep -q 'vm_floating_memory.*optional(number,' "$TOFU_PROJECT/variables.tf"
+    assert_failure
+}
+
+@test "project => the balloon default is documented in README, terraform.tfvars.example and variables.tf" {
+    run grep -q 'half of `vm_memory`' "$TOFU_PROJECT/README.md"
+    assert_success
+    run grep -q 'turns the device off' "$TOFU_PROJECT/README.md"
+    assert_success
+    run grep -q 'not hot-pluggable' "$TOFU_PROJECT/README.md"
+    assert_success
+    run grep -q 'defaults to half of vm_memory' "$TOFU_PROJECT/terraform.tfvars.example"
+    assert_success
+    run grep -q 'defaults to half of' "$TOFU_PROJECT/variables.tf"
     assert_success
 }

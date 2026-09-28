@@ -249,8 +249,10 @@ variable "vm" {
     addresses (proxmox_virtual_environment_vm.debian_vm["<key>"]).
       vm_name, vm_ip, vm_datastore_storage_location are mandatory
       vm_ip is CIDR ("10.0.10.11/24") or "dhcp" (the gateway is then ignored)
-      vm_floating_memory = 0 disables the balloon device; set it below
-      vm_memory to allow the host to reclaim unused memory
+      vm_floating_memory is the balloon floor: left unset it defaults to half of
+      vm_memory, an explicit value pins another floor and 0 disables the balloon
+      device entirely (the balloon lets the host reclaim the guest's idle
+      memory, never below that floor)
       vm_id is optional and must be >= 100 when pinned
       vm_protection = true makes Proxmox refuse to destroy the VM; it cannot be
       combined with vm_recreate_on_cloud_init_change (a rebuild must destroy)
@@ -270,7 +272,7 @@ variable "vm" {
     vm_cores                         = optional(number, 2)
     vm_cpu_type                      = optional(string, "x86-64-v2-AES")
     vm_memory                        = optional(number, 2048)
-    vm_floating_memory               = optional(number, 0)
+    vm_floating_memory               = optional(number)
     vm_disk_size                     = optional(number, 8)
     vm_nic_rate_limit                = optional(number, 0)
     vm_id                            = optional(number)
@@ -292,14 +294,14 @@ variable "vm" {
 
   validation {
     condition = alltrue([
-      for v in values(var.vm) : v.vm_cores > 0 && v.vm_memory > 0 && v.vm_disk_size > 0 && v.vm_nic_rate_limit >= 0 && v.vm_floating_memory >= 0
+      for v in values(var.vm) : v.vm_cores > 0 && v.vm_memory > 0 && v.vm_disk_size > 0 && v.vm_nic_rate_limit >= 0 && (v.vm_floating_memory == null || v.vm_floating_memory >= 0)
     ])
     error_message = "vm_cores, vm_memory and vm_disk_size must be greater than 0; vm_nic_rate_limit and vm_floating_memory must not be negative."
   }
 
   validation {
-    condition     = alltrue([for v in values(var.vm) : v.vm_floating_memory <= v.vm_memory])
-    error_message = "vm_floating_memory (balloon floor) must not exceed vm_memory."
+    condition     = alltrue([for v in values(var.vm) : v.vm_floating_memory == null || v.vm_floating_memory <= v.vm_memory])
+    error_message = "vm_floating_memory (balloon floor) must not exceed vm_memory: leave it unset to use half of vm_memory, or set 0 to disable the balloon device."
   }
 
   validation {
