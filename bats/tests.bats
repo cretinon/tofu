@@ -1098,6 +1098,21 @@ STUB
     __var_case 'images = { x = { content_type = "iso", url = "https://cloud.example.com/a.img", file_name = "a.img", checksum = "abc123" } }' "checksum must be a hexadecimal digest"
 }
 
+@test "project => images reject an unknown decompression_algorithm" {
+    __require_tofu
+    __var_harness >/dev/null
+    __var_case 'images = { x = { content_type = "iso", url = "https://cloud.example.com/a.img.gz", file_name = "a.img", decompression_algorithm = "zip" } }' "decompression_algorithm must be one of"
+}
+
+@test "project => images accept a gz image with decompression_algorithm" {
+    __require_tofu
+    __var_harness >/dev/null
+    local __h="$TEST_DIR/vars"
+    printf '%s\n' 'images = { openwrt = { content_type = "iso", url = "https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz", file_name = "openwrt-25.12.5-x86-64-generic-ext4-combined.img", checksum = "23e2538e8ab0eb52dfed1c65d608ecdb71ffd432dd54885da138ae67cd9e4461", checksum_algorithm = "sha256", decompression_algorithm = "gz" } }' >"$__h/case.tfvars"
+    run tofu -chdir="$__h" plan -no-color -input=false -var-file=base.tfvars -var-file=case.tfvars
+    assert_success
+}
+
 @test "project => vm_id below 100 is rejected" {
     __require_tofu
     __var_harness >/dev/null
@@ -1337,6 +1352,30 @@ ct = { dns = { ct_name = "dns", ct_ip = "10.0.10.21/24", ct_datastore_storage_lo
     run grep -q 'tofu_apply' "$TOFU_PROJECT/README.md"
     assert_success
     run grep -q '\-\-force' "$TOFU_PROJECT/README.md"
+    assert_success
+}
+
+@test "project => images.tf passes decompression_algorithm to the download resource" {
+    run grep -q 'decompression_algorithm = each.value.decompression_algorithm' "$TOFU_PROJECT/images.tf"
+    assert_success
+}
+
+@test "project => images.tf disables the size-based overwrite check" {
+    # the provider compares the size read from the datastore with the url Content-Length: a
+    # decompressed download can never match, so `overwrite` must stay off or the image is
+    # downloaded again at every plan (bpg/terraform-provider-proxmox#1740)
+    run grep -q '^  overwrite = false$' "$TOFU_PROJECT/images.tf"
+    assert_success
+    run grep -q 'overwrite = false' "$TOFU_PROJECT/README.md"
+    assert_success
+}
+
+@test "project => the default images ship the OpenWrt gz entry" {
+    run grep -q 'openwrt2512 = {' "$TOFU_PROJECT/variables.tf"
+    assert_success
+    run grep -q 'decompression_algorithm = "gz"' "$TOFU_PROJECT/variables.tf"
+    assert_success
+    run grep -q 'openwrt2512' "$TOFU_PROJECT/README.md"
     assert_success
 }
 

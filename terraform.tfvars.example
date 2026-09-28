@@ -97,16 +97,28 @@ ssh_public_keys = [
 # --- Managed OS images ------------------------------------------------------
 
 # The defaults provision from Debian 13 ("debian13" image / "debian13-ct"
-# template) and Debian 12 ("debian12" / "debian12-ct"). Overriding "images"
-# replaces the whole default map, so redefine every image you still reference.
-# file_name is mandatory in every entry (datastore name, extension included);
-# a checksum must be a hex digest whose length matches checksum_algorithm.
+# template), Debian 12 ("debian12" / "debian12-ct") and OpenWrt 25.12
+# ("openwrt2512", a gzip-compressed VM image the node decompresses). Overriding
+# "images" replaces the whole default map, so redefine every image you still
+# reference. file_name is mandatory in every entry (datastore name, extension
+# included); a checksum must be a hex digest whose length matches
+# checksum_algorithm. decompression_algorithm ("gz", "lzo", "zst", "bz2") is
+# only needed when the url serves a compressed file: the node writes the
+# decompressed file under file_name, which keeps the .img extension PVE accepts.
 # images = {
 #   debian13 = {
 #     content_type = "iso"
 #     url          = "https://cloud.debian.org/images/cloud/trixie/20260831-2587/debian-13-genericcloud-amd64-20260831-2587.qcow2"
 #     file_name    = "debian-13-genericcloud-amd64-20260831-2587.img"
 #     checksum     = "8ea9faae810043a0b35b0149f05014f26705c2339ffb11ead308f33e844a87cc3ef46ec81d5262b38817b6a88af404874d48a5857ebe072ef6a31dfb6e371f50"
+#   }
+#   openwrt2512 = {
+#     content_type            = "iso"
+#     url                     = "https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz"
+#     file_name               = "openwrt-25.12.5-x86-64-generic-ext4-combined.img"
+#     checksum                = "23e2538e8ab0eb52dfed1c65d608ecdb71ffd432dd54885da138ae67cd9e4461"
+#     checksum_algorithm      = "sha256"
+#     decompression_algorithm = "gz"
 #   }
 # }
 

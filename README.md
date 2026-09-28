@@ -291,6 +291,7 @@ ${MY_GIT_DIR}/shell/my_warp.sh --lib tofu tofu_destroy --force
 - `vm_ip` is a CIDR (`10.0.10.11/24`) or `dhcp`: a static address must be free and outside the
   DHCP range the node serves.
 - Overriding `images` replaces the **whole** default map (`debian13`, `debian12`,
+  `openwrt2512`, `debian13-ct`, `debian12-ct`), so re-declare every image still referenced.
 - Changing `vm_memory` or `vm_floating_memory` restarts the guest: memory is not hot-pluggable
   and the provider reboots the VM itself during `tofu_apply` (`reboot_after_update` defaults to
   `true`). The provider updates every VM **in parallel**, so a fleet-wide change — such as this
@@ -359,9 +360,10 @@ Map of images downloaded once on the node; the key is what entries reference thr
 | `file_name` | string | **required** | Name in the datastore: `.img`/`.iso` for `iso`, `.tar.zst`/`.tar.gz` for `vztmpl`. |
 | `checksum` | string | `""` | Expected digest; hex, its length is checked against the algorithm; empty = no verification. |
 | `checksum_algorithm` | string | `sha512` | `md5`, `sha1`, `sha224`, `sha256`, `sha384`, `sha512`. |
+| `decompression_algorithm` | string | `""` | `gz`, `lzo`, `zst` or `bz2` when the URL serves a compressed file: the node decompresses the download and stores the result under `file_name`; empty = no decompression. |
 
-Defaults: `debian13` (VM, Debian 13), `debian12` (VM, Debian 12), `debian13-ct`,
-`debian12-ct` (LXC templates).
+Defaults: `debian13` (VM, Debian 13), `debian12` (VM, Debian 12), `openwrt2512` (VM, OpenWrt
+25.12, decompressed from the upstream `.img.gz`), `debian13-ct`, `debian12-ct` (LXC templates).
 
 ### `vm` — virtual machines
 
@@ -442,8 +444,40 @@ wrong-typed image key fails with an explicit message (a `precondition`, evaluate
 
 The images are downloaded **on the node** by the PVE `download-url` API (`images.tf`), so
 nothing large transits through your workstation and no manual `wget` is needed. The default
-entries are pinned to **versioned** Debian URLs with their `sha512` digest, because a `latest`
-URL would invalidate the pinned checksum on every release.
+entries are pinned to **versioned** URLs with their digest, because a `latest` URL would
+invalidate the pinned checksum on every release. An entry whose URL serves a **compressed**
+file asks the node to decompress it with `decompression_algorithm`.
+
+### OpenWrt image (gz)
+
+The `openwrt2512` default entry provisions OpenWrt 25.12.5 (`x86/64` target) from the
+`generic-ext4-combined` image — the MBR/BIOS variant, which is the one that boots under the
+Proxmox machine this project uses (`bios = "ovmf"` **and** an EFI disk would be required for a
+`-efi` image, and the `squashfs` variants trade disk growth for Failsafe):
+
+- Upstream publishes only `.img.gz` files, hence
+  `decompression_algorithm = "gz"`: the node downloads the `.img.gz` and stores the
+  **decompressed** file under `file_name`, which keeps the `.img` extension PVE accepts.
+- The API parameter is recent: check the node once with
+  `pvesh get /nodes/<node>/storage/<store>/download-url --help | grep -i decompress` — without
+  it the resource fails at `apply` time, not at `plan` time.
+- `checksum` is pinned to the published **sha256 of the `.img.gz`** (the release's
+  `sha256sums`). If a node verified the digest *after* decompression instead, the download
+  would fail with a checksum mismatch and the decompressed digest would have to be pinned
+  (`gunzip` then `sha256sum` on the node) — a failed download creates no guest.
+- **OpenWrt does not run cloud-init**, so nothing cloud-init provides reaches the guest: the
+  snippets, `initialization.ip_config`, `dns` and `vm_admin_user` are inert for it (harmless:
+  the snippets stay uploaded and every other VM keeps using them). The guest boots the OpenWrt
+  **factory default** (`192.168.1.1/24` **with a DHCP server on its LAN**), so attach it to an
+  isolated bridge for the first boot and configure it from the console (`passwd`, then
+  `uci set network.lan.ipaddr=...`).
+- `qemu-ga` must be installed **in the guest** (`apk add qemu-ga` on 25.12) for
+  `agent.enabled` to be satisfied and `vm_ipv4_addresses` to report anything; without it PVE
+  cannot shut the guest down gracefully (`stop_on_destroy = true` still makes destroy succeed,
+  as a hard power-off).
+- The image's rootfs is small and **not** auto-grown: the VM disk (`vm_disk_size`, 8 GiB by
+  default) is much larger than the image, so the extra room stays unallocated until the root
+  partition is expanded inside the guest.
 
 ### Refresh an image
 
@@ -478,6 +512,26 @@ Notes:
 - `overwrite_unmanaged = true` makes the resource **delete** a same-named file that already sits
   in the datastore — including one this configuration did not create — and download the image
   again, instead of failing with "file already exists".
+- `overwrite = false` disables the provider's size check on the download resource. The provider
+  replaces the resource as soon as the size it reads from the datastore differs from the
+  `Content-Length` of the URL, and that comparison can never match a **decompressed** download:
+  the node stores the decompressed image while the URL announces the compressed one. With the
+  provider default (`true`) the `openwrt2512` entry — the only one using
+  `decompression_algorithm` — was downloaded again at **every** plan and never converged
+  ([bpg/terraform-provider-proxmox#1740](https://github.com/bpg/terraform-provider-proxmox/issues/1740);
+  fixed upstream only in provider `>= 0.78.2`, while `providers.tf` pins `~> 0.74.0`).
+
+  - Nothing is lost here: the pinned `checksum` still verifies the download itself, and a fresh
+    copy stays one raw CLI command away, since the wrapper forwards no extra `tofu` flag:
+
+    ```shell
+    tofu -chdir="$MY_GIT_DIR/tofu" apply -replace='proxmox_virtual_environment_download_file.image["openwrt2512"]'
+    ```
+
+  - The **first** `tofu_plan` run after the setting is added still shows one last replacement of
+    `openwrt2512`: that replacement was computed by a refresh done while the state still carried
+    `overwrite = true`. A single `tofu_apply --force` settles it, and the following plans are
+    clean.
 
 ---
 

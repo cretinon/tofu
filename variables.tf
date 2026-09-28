@@ -144,13 +144,19 @@ variable "images" {
       checksum           hex digest whose length must match checksum_algorithm,
                          empty = no verification
       checksum_algorithm md5|sha1|sha224|sha256|sha384|sha512
+      decompression_algorithm
+                         gz|lzo|zst|bz2 when the url serves a compressed file
+                         (PVE decompresses it on the node); empty = no
+                         decompression. file_name still carries the name of the
+                         uncompressed file, without the compression suffix
   EOT
   type = map(object({
-    content_type       = string
-    url                = string
-    file_name          = string
-    checksum           = optional(string, "")
-    checksum_algorithm = optional(string, "sha512")
+    content_type            = string
+    url                     = string
+    file_name               = string
+    checksum                = optional(string, "")
+    checksum_algorithm      = optional(string, "sha512")
+    decompression_algorithm = optional(string, "")
   }))
 
   default = {
@@ -165,6 +171,22 @@ variable "images" {
       url          = "https://cloud.debian.org/images/cloud/bookworm/20260909-2596/debian-12-genericcloud-amd64-20260909-2596.qcow2"
       file_name    = "debian-12-genericcloud-amd64-20260909-2596.img"
       checksum     = "08fea112563461f251f3c95a5c5cf8cb25eb60f74cec03e85a97ff91d3efef3059d35837598bbb476008f20db6d3bdc7143c5f2f2a9a6da394a0acc601fd5986"
+    }
+    # OpenWrt publishes its x86/64 combined images gzip-compressed, hence
+    # decompression_algorithm: the node downloads the .img.gz and writes the
+    # decompressed file under file_name -- which must still end with .img, the
+    # extension PVE accepts for a VM disk. The checksum is the published sha256
+    # of the .img.gz; if a node verified the digest after decompression instead,
+    # the download would fail cleanly and the decompressed digest would have to
+    # be pinned. Requires a PVE whose download-url API handles decompression.
+    # See README "OpenWrt image (gz)".
+    openwrt2512 = {
+      content_type            = "iso"
+      url                     = "https://downloads.openwrt.org/releases/25.12.5/targets/x86/64/openwrt-25.12.5-x86-64-generic-ext4-combined.img.gz"
+      file_name               = "openwrt-25.12.5-x86-64-generic-ext4-combined.img"
+      checksum                = "23e2538e8ab0eb52dfed1c65d608ecdb71ffd432dd54885da138ae67cd9e4461"
+      checksum_algorithm      = "sha256"
+      decompression_algorithm = "gz"
     }
     # The two LXC templates below are the only unverified downloads of this
     # project: download.proxmox.com publishes no SHA512SUMS next to them and
@@ -209,6 +231,14 @@ variable "images" {
       contains(["md5", "sha1", "sha224", "sha256", "sha384", "sha512"], i.checksum_algorithm)
     ])
     error_message = "Every image checksum_algorithm must be one of md5|sha1|sha224|sha256|sha384|sha512."
+  }
+
+  validation {
+    condition = alltrue([
+      for i in values(var.images) :
+      contains(["", "gz", "lzo", "zst", "bz2"], i.decompression_algorithm)
+    ])
+    error_message = "Every image decompression_algorithm must be one of gz|lzo|zst|bz2, or empty when the node must not decompress the download."
   }
 
   validation {
